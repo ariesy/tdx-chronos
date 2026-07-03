@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# 数据卷（不 commit · 8GB+）
+data/
+data/parquet/
+data/fin/
+data/index/
+data/gp/
+data/xdxr/
+data/snapshot/
+data/meta.db
+
+# 大型 vendor（不 commit · 走 vendoring 工具链）
+vendor/*/build/
+vendor/*/dist/
+*.whl
+*.tar.gz
+
+# 日志（运行时）
+logs/*.log
+logs/*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 临时文件
+*.tmp
+*.bak
+.cache/
+
+# 凭据
+.env
+.env.local
+secrets.yaml
+config/local.yaml
