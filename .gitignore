@@ -43,3 +43,7 @@ logs/*.json
 .env.local
 secrets.yaml
 config/local.yaml
+
+# vendor 解出的 __pycache__ 不 commit
+vendor/_vendor/**/__pycache__/
+vendor/_vendor/**/*.pyc
