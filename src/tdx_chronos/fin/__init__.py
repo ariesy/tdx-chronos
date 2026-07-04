@@ -19,5 +19,14 @@ Schema 真相 (2026-07-04 Sprint 4a D1 实证):
 Phase 1 PoC 文档写的「264 字段」是错的 · 实际 581 字段
 """
 from .columns import columns  # noqa: F401
+from .tdxfin import TdxFinReader, QuarterData  # noqa: F401
+from .tdxgp import TdxGpReader, GpFileInfo, BatchSummary  # noqa: F401
 
-__all__ = ["columns", "TdxFinReader", "QuarterData"]
+__all__ = [
+    "columns",
+    "TdxFinReader",
+    "QuarterData",
+    "TdxGpReader",
+    "GpFileInfo",
+    "BatchSummary",
+]

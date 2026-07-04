@@ -65,6 +65,21 @@ class MetaDB:
         error_msg       TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_dl_zip ON download_log(zip_name);
+
+    CREATE TABLE IF NOT EXISTS gp_metadata (
+        file_path        TEXT PRIMARY KEY,
+        file_size        INTEGER NOT NULL,
+        record_count     INTEGER NOT NULL,
+        market           TEXT,                        -- 'sh' | 'sz' | 'bj' | '?'
+        code             TEXT,                        -- 6-digit code
+        first_date       INTEGER,                     -- YYYYMMDD (sample type=1 first)
+        last_date        INTEGER,                     -- YYYYMMDD (sample type=1 last)
+        parse_ok         INTEGER NOT NULL DEFAULT 0, -- 0/1
+        error            TEXT,
+        parsed_at        TIMESTAMP NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gp_market ON gp_metadata(market);
+    CREATE INDEX IF NOT EXISTS idx_gp_code ON gp_metadata(code);
     """
 
     def __init__(self, db_path: str | Path):
@@ -252,6 +267,103 @@ class MetaDB:
         conn = self._connect()
         return conn.execute(
             "SELECT * FROM download_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    # ---------------------------------------------------------------------
+    # CRUD · gp_metadata (Sprint 4a D2)
+    # ---------------------------------------------------------------------
+
+    def init_gp_metadata_schema(self) -> None:
+        """创建 gp_metadata 表 (Sprint 4a D2 股本元信息)
+
+        Note: SCHEMA 已包含 · 保留为公开 API 以便外部调用
+        """
+        conn = self._connect()
+        with self._txn() as cur:
+            cur.executescript(self.SCHEMA)
+
+    def record_gp_metadata(
+        self,
+        file_path: str,
+        file_size: int,
+        record_count: int,
+        market: str,
+        code: str,
+        first_date: Optional[int] = None,
+        last_date: Optional[int] = None,
+        parse_ok: bool = True,
+        error: Optional[str] = None,
+    ) -> None:
+        """Upsert 1 行到 gp_metadata
+
+        Args:
+            file_path:    完整 .dat 路径
+            file_size:    文件大小 (bytes)
+            record_count: 13B record 数量
+            market:       'sh'/'sz'/'bj'/'?'
+            code:         6 位股票代码
+            first_date:   最早 type=1 季末记录 (YYYYMMDD)
+            last_date:    最晚 type=1 季末记录 (YYYYMMDD)
+            parse_ok:     True/False
+            error:        失败原因 (parse_ok=True 时 None)
+        """
+        conn = self._connect()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._txn() as cur:
+            cur.execute(
+                """
+                INSERT INTO gp_metadata
+                    (file_path, file_size, record_count, market, code,
+                     first_date, last_date, parse_ok, error, parsed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_size = excluded.file_size,
+                    record_count = excluded.record_count,
+                    market = excluded.market,
+                    code = excluded.code,
+                    first_date = excluded.first_date,
+                    last_date = excluded.last_date,
+                    parse_ok = excluded.parse_ok,
+                    error = excluded.error,
+                    parsed_at = excluded.parsed_at
+                """,
+                (file_path, file_size, record_count, market, code,
+                 first_date, last_date, 1 if parse_ok else 0,
+                 error, now),
+            )
+
+    def count_gp_metadata(self, parse_ok: Optional[bool] = None) -> int:
+        """gp_metadata 总数 / parse_ok 过滤"""
+        conn = self._connect()
+        if parse_ok is None:
+            row = conn.execute("SELECT COUNT(*) AS c FROM gp_metadata").fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM gp_metadata WHERE parse_ok=?",
+                (1 if parse_ok else 0,),
+            ).fetchone()
+        return row["c"]
+
+    def get_gp_market_stats(self) -> List[sqlite3.Row]:
+        """按 market 统计 (sh/sz/bj/? · parse_ok=True only)"""
+        conn = self._connect()
+        return conn.execute(
+            """
+            SELECT market, COUNT(*) AS file_count, SUM(file_size) AS total_bytes,
+                   SUM(record_count) AS total_records
+            FROM gp_metadata
+            WHERE parse_ok=1
+            GROUP BY market
+            ORDER BY market
+            """,
+        ).fetchall()
+
+    def get_gp_failed(self, limit: int = 50) -> List[sqlite3.Row]:
+        """返回 parse_ok=False 的行 (错误率报表)"""
+        conn = self._connect()
+        return conn.execute(
+            "SELECT * FROM gp_metadata WHERE parse_ok=0 ORDER BY file_path LIMIT ?",
             (limit,),
         ).fetchall()
 
