@@ -514,29 +514,35 @@ df = FinancialReader.to_data('gpcw20260331.zip')  # 已验证函数
 - 调整**：**Sprint 3 拆分**（全量下载 vs 解析 vs 验证独立 Sprint·避免同周两大块代码）
 - 调整**：**Sprint 4 财务 + 股本** 拆分（财务变 + 股本存量·依赖不同）
 
-### 里程碑表（v1.1 第 5 轮）
+### 里程碑表（v1.1 第 5 轮 + **2026-07-04 第 9 轮 Sprint 2 末修订**：选项 B 合并 Sprint 3b 到 Sprint 4a）
 
 | # | Sprint 名 | 周期 | 交付物 | 依赖 | 验证依据 |
 |---|---|---|---|---|---|
-| 0 | **项目初始化 + 文档同步 + vendoring 工具链验证** | **1 d** | GitHub repo + 目录骨架 + 初始化 commit + `docs/CONTRIBUTING.md` + **vendoring 可行性验证** ⚠️ v1.1 第 8 轮评审新增：跑通 `pip install vendoring && python -m vendoring sync vendor/mootdx/`，避免 Sprint 1 变成探索 | 签字 | 本轮需求文档 · v1.1 第 8 轮评审 |
-| 1 | **mootdx Vendor 化 + 补丁备用** | **1.5-2 d** ⚠️ v1.1 第 7 轮修订（原 3 d 缩短 · 4 bug 不修）| `vendor/mootdx/` 复制 + 4 个 bug **记入 vendor/UPGRADE_NOTES.md 但不修**（v1.1 主路径不触发） + vendor 包中查看 · 单元测试只测"可 import + 可被抽象层调用" · **交接条件**：Sprint 0 需先验 vendoring 工具链可行性（`from vendor.mootdx import mootdx` 能跑通） | Sprint 0 | Phase 1 PoC 已验证 · v1.1 第 7 轮修订 |
-| 2 | **抽象层 + 元数据 SQLite** | **3 d** | `sources/official_zip.py` 🆕 + `sources/mootdx_vendor.py` + `meta.db` schema (含 `download_log` 表) + 单元测试 | Sprint 1 | §三 IN #16 |
-| 3 | **全量 K 线下载 + 解析 + 验证** | **拆分** | _见 3a 3b_ | Sprint 2 | 今天 12,254 个 .day 验证 |
-| 3a | · 下载主路径 | **3 d** | `bulk_download.py` + 检查 hsjday.zip 完整性 + 全量 download + 断点续传 | — | 主人 vm002 0.8 MB/s 3 zip 工作日 15-20 min 实测 |
-| 3b | · 解析 + 验证 | **3 d** | `sources/official_zip.py` → Parquet + 12,256 文件解析 + 解析时间统计 + 错误率报表 + ~~sina 交叉验证  v1.1 不实现~~ | 3a | 今天 PoC 已验证 .day schema |
-| 4 | **财务 + 股本 + 指数** | **拆分** | _见 4a 4b_ | Sprint 3b | 今天 PoC 已验证 gpcw20260331.dat |
-| 4a | · 财务 (变) | **3 d** | tdxfin.zip 历史季报解 + 占位 164B 检测 + FinancialReader.to_data 集成 + 5526×585 DataFrame 验证 | — | Phase 1 PoC 已验证 |
-| 4b | · 股本 + 指数 (存量) | **3 d** | tdxgp.zip 股本解 (7,573 .dat) + 指数 5 zip 下载 + 5 个主要指数 (上证/深证/沪深300/创业/科创) 解 + 验证 | 4a | 今天 §四 摸排验证 |
+| 0 | **项目初始化 + 文档同步 + vendoring 工具链验证** | **1 d · ✅** | GitHub repo + 目录骨架 + 初始化 commit + `docs/CONTRIBUTING.md` + vendoring 工具链验证 | 签字 | 本轮需求文档 · v1.1 第 8 轮评审 |
+| 1 | **mootdx Vendor 化 + 补丁备用** | **1.5-2 d · ✅** | `vendor/mootdx/` 复制 + 4 bug 记入 UPGRADE_NOTES 但不修 + 单元测试 9/9 PASSED | Sprint 0 | Sprint 1 验证 commit `de91fd4`-`437f2c3` |
+| 2 | **抽象层 + 元数据 SQLite** | **3 d · ✅ (2 h 实际)** ⚡ | `sources/official_zip.py` (流式 + run_full_parse) + `meta.db` schema + **35 单元测试 PASSED** + **M1 验证里程碑跑通 12,256 文件** | Sprint 1 | Sprint 2 验证 commit `affb5ce`-`04284ce` |
+| 3 | **⚡ Sprint 3a (简化下载) + Sprint 3b (并入 4a)** | — | _见下_ | Sprint 2 | |
+| 3a | · **简化下载**（v1.1 第 9 轮修订：原 3d → 1d 简化版）| **1 d** | `cron/daily_sync.sh` + `bulk_download.py` (curl + zip 解压 + 断点续传) + 5 zip 下载验收 (hsjday/tdxfin/tdxgp + 2 指数) | Sprint 2 | 主人 vm002 0.8 MB/s 3 zip 工作日 15-20 min 实测 |
+| 3b | · _已并入 Sprint 4a（原 Sprint 3b 任务· 2026-07-04 第 9 轮修订）_| ~~3 d~~ | _见 Sprint 4a 附注_ | | |
+| 4 | **财务 + 全量解析 + 压缩优化**（v1.1 第 9 轮整合：3b + 4a + Parquet 压缩优化）| — | _见下_ | Sprint 3a | |
+| 4a | · **财务 + 全量解析 + 压缩优化** | **4 d** ⚠️ v1.1 第 9 轮修订（原 3d + 3b 3d + 压缩优化 1d = 7d 整合为 4d）| · `tdxfin.zip` 历史季报解 · 占位 164B 检测 · `FinancialReader.to_data` 集成 · 5526×585 DataFrame 验证 · · **原 Sprint 3b 12,256 文件已完成（Sprint 2 末 M1 验证）** → 本 Sprint 仅补跨期验证 + 错误率报表 · · ⚡ **Parquet 压缩优化**（Sprint 2 末实测 input 917MB → Parquet 1202MB 反转） · 选项: zstd / 1-market-1-Parquet / DuckDB 列存 | Sprint 3a | Phase 1 PoC 已验证 + Sprint 2 M1 跑通 |
+| 4b | · 股本 + 指数（存量） | **3 d** | tdxgp.zip 股本解 (7,573 .dat) + 指数 5 zip 下载 + 5 主要指数解 + 验证 | 4a | 今天 §四 摸排验证 |
 | 5 | **每日增量 + cron + 告警** | **4 d** | `cron/{daily,weekly}_sync.sh` + `alerts/feishu.py` + 化减 P0 #3 包级重试 (5500 重试 → 5 重试) + 3 个镜像容错 + 飞书告警 (3 个镜像全失败才告警) | Sprint 4b | 今天 §四.6 + §七 验证 |
 | 6 | **库文档 + 上线 + 健康检查** | **3 d** | `README.md` + `doctor.py` 周报 + 路径检查 + 5 zip 每日自动化 E2E 测试 | Sprint 5 | 主人签字进入 |
 | 7 | **验证 + 主人签字 + v1.1.0 tag** | **2 d** | 端到端压测（1 周持续 5 交易日）+ README + v1.1.0 tag + 官方源补充 (bj/xsbday 不下) + Sprint 8 跟进项 | Sprint 6 | 交付预期合理化 |
 
-**总周期**：
-- 1 + 1.5 + 3 + (3+3) + (3+3) + 4 + 3 + 2 = **23.5 工作日**（中间估算）
-- 1 + 2 + 3 + (3+3) + (3+3) + 4 + 3 + 2 = **24 工作日**（乐观估算）
-- 1 + 3 + 3 + (3+3) + (3+3) + 4 + 3 + 2 = **25 工作日**（最保守估算 · Sprint 1 不缩短）
-- + **2 天缓冲**（Sprint 3 解析 / Sprint 4 财务跨季度交付可能超时） = **25.5-27 工作日** = **5-6 周** · **v1.1 第 7 轮修订：Sprint 1 缩短节省 1-1.5d**
-- 主人会内另评：原 21 天 · 现在 **26-28 天 · 委员会 2026-07-03 修订 · 第 7 轮下调到 25.5-27 天**
+**总周期**（v1.1 第 9 轮修订）：
+- ✅ 0 + 1 + 2 已完成 (实际耗时 ~7 h)
+- 1 + 4 + 3 + 4 + 3 + 2 = **17 d** · v1.1 第 9 轮修订后中间估算（原 25.5-27d）
+- 乐观估算：1 + 3 + 3 + 4 + 3 + 2 = **16 d**
+- 最保守：1 + 4 + 3 + 4 + 3 + 2 = **17 d**
+- + **2 d 缓冲** = **18-19 工作日** = **3.5-4 周**
+- 主人会内评：**v1.1.0 末只需 17-19 工作日**（原 21 天 → 26-28 天 → 25.5-27 天 → **17-19 天** · 总节省 8-9 d）
+
+**第 9 轮修订关键决策（2026-07-04 Sprint 2 末签字）**：
+- ✅ Sprint 2 实测已实现原 Sprint 3b 解析任务（M1 验证 12,256 文件· 2 min 跑通）
+- ⚡ **选项 B**：Sprint 3b 并入 Sprint 4a（节省 3d）
+- ⚡ **新增**：Parquet 压缩优化入 Sprint 4a（从 Sprint 2 末负发现 +1d）
 
 ### 拆分决策依据（委员会 2026-07-03 + 验证发现）
 
@@ -547,20 +553,21 @@ df = FinancialReader.to_data('gpcw20260331.zip')  # 已验证函数
 | Sprint 5 cron 实现与 P0 #3 化解合并 | 委员会反馈 P0 #3 是设计问题不是调度问题 · 必须在 cron 实现周同步验证 | §七 风险 #8 已解决 |
 | Sprint 6 加上 **5 zip 每日自动化 E2E** | 委员会警告"不能拿 Sample In 测试 1 交易日 · 要跨周" | §六 原始草拟遗漏 |
 
-### 依存关系图
+### 依存关系图（v1.1 第 9 轮修订）
 
 ```
-Sprint 0 (1d) 
-  └→ Sprint 1 (3d)  [vendor]
-      └→ Sprint 2 (3d)  [抽象层 + meta.db]
-          └→ Sprint 3a (3d)  [下载]
-              └→ Sprint 3b (3d)  [解析 + 验证]
-                  └→ Sprint 4a (3d)  [财务]
-                      └→ Sprint 4b (3d)  [股本 + 指数]
-                          └→ Sprint 5 (4d)  [cron + 告警 + 包级重试]
-                              └→ Sprint 6 (3d)  [E2E + 周报]
-                                  └→ Sprint 7 (2d)  [v1.1.0 tag]
+Sprint 0 (1d ✅)
+  └→ Sprint 1 (1.5-2d ✅)
+      └→ Sprint 2 (3d ✅ · 2h 实际)
+          └→ Sprint 3a (1d · 简化下载)  ← 原 Sprint 3 6d 拆分改：1d 简化版
+              └→ Sprint 4a (4d)  ← 合并原 Sprint 3b + 4a + 压缩优化
+                  └→ Sprint 4b (3d)
+                      └→ Sprint 5 (4d)
+                          └→ Sprint 6 (3d)
+                              └→ Sprint 7 (2d)  [v1.1.0 tag]
 ```
+
+**关键路径** = Sprint 3a → Sprint 7（任何环节延迟 1d · 总周期 +1d）
 
 **关键路径** = Sprint 1→Sprint 5（任何环节延迟 1d · 总周期 +1d）
 
