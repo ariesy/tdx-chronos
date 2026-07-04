@@ -281,3 +281,18 @@ class TestDefaults:
         """v1.1 只支持 https (HTTPS 简单 · Sprint 5 cron 加 backup)"""
         for spec in DEFAULT_ZIPS:
             assert spec["url"].startswith("https://"), spec
+
+
+class TestIndexZips:
+    def test_default_index_zips_three_entries(self):
+        """Sprint 4b D2 3 指数 zip"""
+        from tdx_chronos.sources.bulk_download import DEFAULT_INDEX_ZIPS
+        assert len(DEFAULT_INDEX_ZIPS) == 3
+        names = {z["name"] for z in DEFAULT_INDEX_ZIPS}
+        assert names == {"shzsday", "szzsday", "tdxzs_day"}
+
+    def test_index_zips_https_www_tdx(self):
+        """指数 zip 主机 www.tdx.com.cn (与 hsjday 不同)"""
+        from tdx_chronos.sources.bulk_download import DEFAULT_INDEX_ZIPS
+        for spec in DEFAULT_INDEX_ZIPS:
+            assert spec["url"].startswith("https://www.tdx.com.cn/"), spec

@@ -58,6 +58,28 @@ DEFAULT_ZIPS: List[dict] = [
     },
 ]
 
+# Sprint 4b D2 指数 zip (主机 www.tdx.com.cn · 速度较慢 ~0.27 MB/s)
+DEFAULT_INDEX_ZIPS: List[dict] = [
+    {
+        "name": "shzsday",
+        "url": "https://www.tdx.com.cn/products/data/data/vipdoc/shzsday.zip",
+        "approx_size": 27_000_000,
+        "contains": "上证综指 000001.SH",
+    },
+    {
+        "name": "szzsday",
+        "url": "https://www.tdx.com.cn/products/data/data/vipdoc/szzsday.zip",
+        "approx_size": 36_000_000,
+        "contains": "深证成指 399001.SZ",
+    },
+    {
+        "name": "tdxzs_day",
+        "url": "https://www.tdx.com.cn/products/data/data/vipdoc/tdxzs_day.zip",
+        "approx_size": 78_000_000,
+        "contains": "通达信板块指数 (含沪深300/创业板/科创50)",
+    },
+]
+
 
 @dataclass
 class ZipResult:
@@ -353,6 +375,38 @@ class BulkDownloader:
             start_at=start_at,
             end_at=end_at,
             results=results,
+        )
+
+    # ---------------------------------------------------------------------
+    # Sprint 4b D2 指数 zip 下载 (主机 www.tdx.com.cn)
+    # ---------------------------------------------------------------------
+
+    def download_index(
+        self,
+        snap_dir: Path,
+        zips: Optional[List[dict]] = None,
+        max_retries: int = 3,
+        db_path: Optional[Path] = None,
+        unzip: bool = True,
+    ) -> DownloadSummary:
+        """3 指数 zip 下载 (www.tdx.com.cn · 较慢 ~0.27 MB/s)
+
+        Args:
+            snap_dir:    顶层目录 · $snap_dir/{name}.zip 落盘
+            zips:        默认 DEFAULT_INDEX_ZIPS
+            max_retries: 包级重试 (默认 3)
+            db_path:     Optional MetaDB 路径
+            unzip:       是否解压到 $snap_dir/raw/
+
+        Returns:
+            DownloadSummary · 含 3 zip 结果
+        """
+        return self.download_all(
+            snap_dir=snap_dir,
+            zips=zips or DEFAULT_INDEX_ZIPS,
+            max_retries=max_retries,
+            db_path=db_path,
+            unzip=unzip,
         )
 
     @staticmethod
