@@ -28,7 +28,9 @@
 """
 from __future__ import annotations
 
+import logging
 import struct
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,11 +38,40 @@ from typing import Iterator, Optional, Union
 
 import pandas as pd
 
+from tqdm import tqdm
+
 # 32 bytes / record · little-endian · §四.B
 DAY_STRUCT = struct.Struct("<IIIIIfII")
 
 # Sentinel for unknown source_zip when calling single-file parse
 DEFAULT_SOURCE_ZIP = "hsjday.zip"
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BatchSummary:
+    """parse_hsjday_dir 运行总结
+
+    Attributes:
+        total_files:      出入文件数 (12,256)
+        parsed_ok:        解析成功数
+        parsed_failed:    解析失败数 (异常 · 记录到 download_log)
+        elapsed_seconds:  总耗时
+        bytes_read:       总输入字节
+        parquet_bytes:    总输出字节 (磁盘占用)
+        start_at:         起始时间 (UTC)
+        end_at:           结束时间 (UTC)
+    """
+
+    total_files: int
+    parsed_ok: int
+    parsed_failed: int
+    elapsed_seconds: float
+    bytes_read: int
+    parquet_bytes: int
+    start_at: datetime
+    end_at: datetime
 
 
 @dataclass
@@ -223,3 +254,144 @@ class OfficialZipParser:
             )
         symbol = day_path.stem  # 'sh600000' / 'sz300750' / 'bj920193'
         return symbol, market
+
+
+# ---------------------------------------------------------------------
+# Batch API (Sprint 2 D2 上午 · 流式全量处理)
+# ---------------------------------------------------------------------
+
+def parse_hsjday_dir(
+    raw_dir: Union[str, Path],
+    output_dir: Union[str, Path],
+    db: Optional["MetaDB"] = None,  # type: ignore[name-defined]  # forward ref
+    show_progress: bool = True,
+) -> Iterator[ParseResult]:
+    """流式遍历 hsjday_raw/{sh,sz,bj}/lday/*.day · 解析 + 写 Parquet + 写 meta.db
+
+    设计原则:
+    - Generator yield (内存友好 · 12,256 不全驻)
+    - 单线程 (v1.1 简化 · Sprint 6 重试化减后再并行化考虑)
+    - tqdm 进度条
+    - 坏文件不 crash · 记录到 download_log (parse_status='failed')
+
+    Args:
+        raw_dir:        顶层 (e.g. /tmp/tdx_data/day/hsjday_raw)
+        output_dir:     Parquet 根 (e.g. /app/tdx-chronos/data/parquet)
+        db:             可选 MetaDB · 提供则同步写 symbol_metadata + download_log
+        show_progress:  tqdm 进度条
+
+    Yields:
+        ParseResult · 解析 .day 后 (含 df + 元数据)
+
+    Raises:
+        (不抛 · 异常文件被记录到 download_log)
+    """
+    parser = OfficialZipParser()
+    raw_dir = Path(raw_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files = list(parser.iter_day_files(raw_dir))
+    iterator = (
+        tqdm(files, desc="Parsing .day", unit="file")
+        if show_progress
+        else files
+    )
+
+    for day_path in iterator:
+        try:
+            result = parser.parse_day_file(day_path)
+            target = output_dir / result.market / f"{result.symbol}.parquet"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            result.df.to_parquet(target, index=False)
+            if db is not None:
+                db.record_symbol(
+                    symbol=result.symbol,
+                    market=result.market,
+                    first_listing_date=result.first_date,
+                    record_count=result.record_count,
+                    source_zip=parser.source_zip,
+                    parquet_path=str(target),
+                )
+            yield result
+        except Exception as exc:
+            logger.error("Failed to parse %s: %s", day_path, exc)
+            if db is not None:
+                db.record_download(
+                    zip_name=parser.source_zip,
+                    mirror=None,
+                    size_bytes=day_path.stat().st_size
+                    if day_path.exists() else None,
+                    sha256=None,
+                    parse_status="failed",
+                    error_msg=str(exc)[:500],
+                )
+            # 失败仍然 yield 一个错误标记 · 调用方可计数
+            yield ParseResult(
+                symbol=day_path.stem,
+                market="?",
+                record_count=0,
+                first_date=0,
+                last_date=0,
+                df=pd.DataFrame(),
+            )
+
+
+def run_full_parse(
+    raw_dir: Union[str, Path],
+    output_dir: Union[str, Path],
+    db_path: Union[str, Path],
+    show_progress: bool = True,
+) -> BatchSummary:
+    """一键全量跑 (Sprint 2 D2 上午主入口)
+
+    用法:
+        >>> summary = run_full_parse(
+        ...     '/tmp/tdx_data/day/hsjday_raw',
+        ...     '/app/tdx-chronos/data/parquet',
+        ...     '/app/tdx-chronos/data/meta/meta.db',
+        ... )
+        >>> summary.parsed_ok
+        12256
+    """
+    from tdx_chronos.meta.db import MetaDB  # 避免循环引用
+
+    start = time.monotonic()
+    start_at = datetime.now(timezone.utc)
+    bytes_read = 0
+    parquet_bytes = 0
+    parsed_ok = 0
+    parsed_failed = 0
+
+    with MetaDB(db_path) as db:
+        db.init_schema()
+        for result in parse_hsjday_dir(
+            raw_dir, output_dir, db=db, show_progress=show_progress,
+        ):
+            if result.market == "?":
+                parsed_failed += 1
+            else:
+                parsed_ok += 1
+                # 累计磁盘用量
+                target = (
+                    Path(output_dir) / result.market
+                    / f"{result.symbol}.parquet"
+                )
+                if target.exists():
+                    parquet_bytes += target.stat().st_size
+                # 累计输入字节
+                src = Path(raw_dir) / result.market / "lday" / f"{result.symbol}.day"
+                if src.exists():
+                    bytes_read += src.stat().st_size
+
+    elapsed = time.monotonic() - start
+    return BatchSummary(
+        total_files=parsed_ok + parsed_failed,
+        parsed_ok=parsed_ok,
+        parsed_failed=parsed_failed,
+        elapsed_seconds=elapsed,
+        bytes_read=bytes_read,
+        parquet_bytes=parquet_bytes,
+        start_at=start_at,
+        end_at=datetime.now(timezone.utc),
+    )
