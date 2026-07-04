@@ -357,15 +357,48 @@ class BulkDownloader:
 
     @staticmethod
     def _unzip_into_raw(zip_path: Path, raw_dir: Path) -> Path:
-        """unzip to raw/{sh,sz,bj}/lday/*.day"""
+        """unzip to raw/{sh,sz,bj}/lday/*.day
+
+        注: 通达信 zip 使用 Windows 风格反斜杠路径（\"sh\\lday\\sh000001.day\"）
+        unzip 报警 'backslashes as path separators' 但仍正常解压 · exit 1 (warning)
+        → check=False + 验证文件落盘数 (预期总文件数) 判定成功
+        """
         raw_dir.mkdir(parents=True, exist_ok=True)
-        # unzip -q -o (overwrite)  · -d raw_dir
+        # 先获预期文件数
+        list_result = subprocess.run(
+            ["unzip", "-l", str(zip_path)],
+            capture_output=True,
+            text=True,
+            check=False,  # unzip -l 也可能 exit 1 (windows path warning)
+        )
+        expected_files = 0
+        for line in list_result.stdout.splitlines():
+            line = line.strip()
+            # e.g. '22880  2026-07-03 15:38   sh\\lday\\sh000001.day'
+            parts = line.split()
+            if (
+                len(parts) >= 4
+                and parts[0].isdigit()
+                and not line.startswith("-")
+                and not line.startswith("Archive")
+            ):
+                expected_files += 1
+
+        # 实际解压 (check=False · 容忍 backslash warning)
         subprocess.run(
             [
                 "unzip", "-q", "-o",
                 str(zip_path),
                 "-d", str(raw_dir),
             ],
-            check=True,
+            check=False,
         )
+
+        # 验证: 实际落盘文件数 == 预期
+        actual_files = sum(1 for _ in raw_dir.rglob("*") if _.is_file())
+        if expected_files > 0 and actual_files < expected_files:
+            raise IOError(
+                f"unzip incomplete for {zip_path.name}: "
+                f"expected {expected_files} files, got {actual_files}"
+            )
         return raw_dir
