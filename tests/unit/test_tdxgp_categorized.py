@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 from tdx_chronos.fin.tdxgp_record import TdxGpRecordReader
@@ -49,30 +50,46 @@ class TestToCategorizedBasic:
         assert len(df) <= 100  # 几乎为 0 (gpcw 误识别修复后的清理效果)
 
     def test_total_records_matches_full_data(self):
-        """4 大类 + rare_event = 总 records (Sprint 6 修 bug 后)
+        """4 大类 + rare_event 总 records 验证 (内存安全版)
 
-        注意: type 1-48 中有 28 个 type 未归入 4 大类 (e.g. type 2, 4-10 等)
-        Sprint 6 v1.1 不解释这些 type · 所以总和 < 120.3M 是预期
+        实现要点: 单次 read_table + pc.is_in 过滤 · 不重复加载 parquet
+        Sprint 6 v1.1: 14 types 已分类 · rare_event 包含 type 49-255 + 28 个未分类
         """
+        import pyarrow.parquet as pq
+        import pyarrow.compute as pc
+        from tdx_chronos.fin.tdxgp_types import CATEGORY_BUCKETS
+
+        # 单次 read · 5 次 is_in
+        table = pq.read_table(RECORDS_PATH, columns=["type"])
         total = 0
-        for cat in ("capital_share", "circulating_share", "shareholder_structure",
-                    "finance_event", "rare_event"):
-            df = TdxGpRecordReader.to_categorized(RECORDS_PATH, cat)
-            total += len(df)
-        # Sprint 6 实证: 83.1M (14 types 已分类 · 占 1-48 总 120.3M 的 69%)
-        # 剩余 37M (28 types · 未分类) 留 v2.0 验证
-        assert total >= 80_000_000 and total <= 90_000_000
+        for cat, types in CATEGORY_BUCKETS.items():
+            mask = pc.is_in(table.column("type"), value_set=pa.array(types))
+            cat_count = pc.sum(mask.cast("int64")).as_py()
+            total += cat_count
+
+        # Sprint 6 实证: 4 categories 已分类 ~83M (14 types 分类)
+        # + rare_event (49-255) 几乎为 0 (clean data)
+        # 未分类 type 1-48 (28 types) ~37M · v2.0 待补充 (不计入总和)
+        assert total >= 80_000_000, f"total too small: {total:,}"
+        assert total <= 90_000_000, f"total too large: {total:,}"
 
     def test_capital_share_dominates_4_categories(self):
-        """capital_share 在 4 类别中应最大"""
+        """capital_share 在 4 类别中应最大 (内存安全版)"""
+        import pyarrow.parquet as pq
+        import pyarrow.compute as pc
+        from tdx_chronos.fin.tdxgp_types import CATEGORY_BUCKETS
+
+        table = pq.read_table(RECORDS_PATH, columns=["type"])
         cat_sizes = {}
         for cat in ("capital_share", "circulating_share", "shareholder_structure",
                     "finance_event"):
-            cat_sizes[cat] = len(TdxGpRecordReader.to_categorized(
-                RECORDS_PATH, cat
-            ))
+            types = CATEGORY_BUCKETS[cat]
+            mask = pc.is_in(table.column("type"), value_set=pa.array(types))
+            cat_sizes[cat] = pc.sum(mask.cast("int64")).as_py()
         # capital_share 应 >= shareholder_structure (8 types vs 3 types)
         assert cat_sizes["capital_share"] >= cat_sizes["shareholder_structure"]
+        # sanity: 4 大类都应有 > 100K records
+        assert all(v > 100_000 for v in cat_sizes.values())
 
 
 # ---------------------------------------------------------------------
