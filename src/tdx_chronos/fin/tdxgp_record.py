@@ -46,6 +46,7 @@ from typing import Dict, Iterator, List, Optional
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 RECORD_SIZE = 13
@@ -364,6 +365,75 @@ class TdxGpRecordReader:
             output_rows=output_rows,
             output_bytes=output_bytes,
         )
+
+    # ---------------------------------------------------------------------
+    # Sprint 6 · to_categorized(category)
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def to_categorized(
+        records_path: Path,
+        category: str,
+        code: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """按 category 过滤 records.parquet → pd.DataFrame
+
+        Args:
+            records_path: records.parquet 路径 (Sprint 4b D1 输出)
+            category:     capital_share / circulating_share /
+                          shareholder_structure / finance_event / rare_event
+            code:         Optional 股票代码过滤 (e.g. '600519')
+
+        Returns:
+            pd.DataFrame columns = ['type', 'date', 'value_1', 'value_2', 'market', 'code']
+
+        用法:
+            df = TdxGpRecordReader.to_categorized(
+                Path('/app/tdx-chronos/data/gp/records.parquet'),
+                'capital_share',
+                code='600519',
+            )
+        """
+        from tdx_chronos.fin.tdxgp_types import CATEGORY_BUCKETS, get_type_name
+
+        records_path = Path(records_path)
+        if not records_path.exists():
+            raise FileNotFoundError(f"records.parquet 不存在: {records_path}")
+
+        types = CATEGORY_BUCKETS.get(category)
+        if types is None:
+            raise ValueError(
+                f"Unknown category: {category}. "
+                f"Valid: {list(CATEGORY_BUCKETS.keys())}"
+            )
+
+        # 读全列 · 过滤
+        table = pq.read_table(records_path)
+
+        # filter by type
+        type_arr = table.column('type')
+        mask = pc.is_in(type_arr, value_set=pa.array(types))
+        filtered = table.filter(mask)
+
+        # Optional filter by code
+        if code is not None:
+            code_arr = filtered.column('code')
+            code_mask = pc.equal(code_arr, code)
+            filtered = filtered.filter(code_mask)
+
+        df = filtered.to_pandas()
+        # 加 type_name 字段 (便于阅读)
+        df['type_name'] = df['type'].apply(get_type_name)
+        return df
+
+
+# 委托给 tdxgp._parse_filename_static (避免重复)
+class TdxGpReader:
+    """占位 · 委托 _parse_filename_static"""
+    @staticmethod
+    def _parse_filename_static(name: str) -> tuple[str, str]:
+        from .tdxgp import TdxGpReader as _R
+        return _R._parse_filename(name)
 
 
 # 委托给 tdxgp._parse_filename_static (避免重复)
