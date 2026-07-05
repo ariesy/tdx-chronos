@@ -432,3 +432,52 @@ class Doctor:
             report.level = LEVEL_UNHEALTHY
 
         return report
+
+    def alert_if_unhealthy(
+        self,
+        report: DoctorReport,
+        alertor=None,
+    ):
+        """Sprint 9 T4 · 如果 report 不是 healthy, 发告警
+
+        Args:
+            report: Doctor.run() 返回的报告
+            alertor: Alertor 实例 (default: 创建 DRY-RUN 实例)
+
+        Returns:
+            AlertCard if 发送 else None
+        """
+        from tdx_chronos.alertor import Alertor
+
+        if report.level == LEVEL_HEALTHY:
+            return None
+
+        if alertor is None:
+            alertor = Alertor()  # 默认 DRY-RUN
+
+        # 提取失效 check
+        failed_checks = [c for c in report.checks if not c.passed]
+        failed_lines = "\n".join(
+            f"- {c.name}: {c.actual} (threshold: {c.threshold})"
+            for c in failed_checks
+        )
+
+        # Level 映射: degraded = warning, unhealthy = error
+        level_map = {
+            LEVEL_DEGRADED: "warning",
+            LEVEL_UNHEALTHY: "error",
+        }
+        level = level_map.get(report.level, "warning")
+
+        summary = (
+            f"tdx-chronos doctor {report.level.upper()}: "
+            f"{report.failed_count}/{len(report.checks)} failed"
+        )
+        detail = f"Failed checks:\n{failed_lines}"
+
+        return alertor.send_alert(
+            level=level,
+            summary=summary,
+            detail=detail,
+            source="weekly_doctor.sh",
+        )
