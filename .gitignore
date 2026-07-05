@@ -16,6 +16,8 @@ data/gp/
 data/xdxr/
 data/snapshot/
 data/meta.db
+# 例外: 调研数据 / sample csv 可以 commit (· < 1MB)
+!data/research/
 
 # 大型 vendor（不 commit · 走 vendoring 工具链）
 vendor/*/build/
