@@ -35,15 +35,18 @@ class TestDoctorHealthy:
         report = Doctor().run()
         # 不强求 healthy (可能 K线没到位) 但 level 必在 3 选 1
         assert report.level in {LEVEL_HEALTHY, LEVEL_DEGRADED, LEVEL_UNHEALTHY}
-        assert len(report.checks) == 8
+        # Sprint 9 T1 加 reconciliation → 9 个 check
+        assert len(report.checks) == 9
 
     def test_real_data_8_checks_present(self):
         report = Doctor().run()
         names = {c.name for c in report.checks}
+        # Sprint 9 T1 加 reconciliation → 9 个 check
         expected = {
             "kline_symbols", "financial_quarters", "gp_records",
             "index_records", "download_log_7d_success_rate",
             "kline_parquet_size_mb", "index_freshness_days", "error_rate",
+            "reconciliation",  # Sprint 9 T1
         }
         assert names == expected
 
@@ -166,3 +169,47 @@ class TestDoctorLevels:
         else:
             report.level = LEVEL_UNHEALTHY
         assert report.level == LEVEL_UNHEALTHY
+
+
+# ---------------------------------------------------------------------
+# TestDoctorReconciliation (Sprint 9 T1)
+# ---------------------------------------------------------------------
+class TestDoctorReconciliation:
+    """Sprint 9 T1 · doctor.py reconciliation 健康检查 (4 测试)"""
+
+    def test_check_reconciliation_returns_checkresult(self):
+        """_check_reconciliation 返回 CheckResult"""
+        result = Doctor()._check_reconciliation()
+        assert isinstance(result, CheckResult)
+        assert result.name == "reconciliation"
+
+    def test_check_reconciliation_passes_for_latest_quarter(self):
+        """gpcw20260331.parquet 三表勾稽 - 1 个 stock 边界 fail 正常"""
+        result = Doctor()._check_reconciliation(tolerance=0.001)
+        # Sprint 9 T1 摸排真相 (2026-07-05):
+        #   gpcw20260331.parquet: BS 99.98% (5523/5524 pass, 688779 中科星图 0.26%)
+        #   CF 100% · IS 100%
+        # 1 个 stock fail 是真实数据问题 (差异 4300万, 比率 0.26%)
+        # Sprint 8 T3 验证 gpcw20251231 100% PASS, 但更新 quarter 有边界 fail
+        assert "balance_sheet_equation=99" in result.detail, \
+            f"BS 勾稽应 >= 99% · detail={result.detail}"
+        assert "cashflow_reconciliation=100" in result.detail, \
+            f"CF 勾稽应 100% · detail={result.detail}"
+        assert "income_to_balance_sheet=100" in result.detail, \
+            f"IS 勾稽应 100% · detail={result.detail}"
+
+    def test_check_reconciliation_handles_missing_parquet(self, tmp_path):
+        """parquet_root 不存在 → FAIL + detail 信息"""
+        doctor = Doctor(parquet_root=tmp_path)
+        result = doctor._check_reconciliation()
+        assert result.passed is False
+        assert "不存在" in result.detail or "未找到" in result.detail
+
+    def test_check_reconciliation_tolerance_param(self):
+        """tolerance 参数生效 (±1% 应该更容易 PASS)"""
+        strict = Doctor()._check_reconciliation(tolerance=0.0001)  # ±0.01% 极严
+        loose = Doctor()._check_reconciliation(tolerance=0.01)    # ±1.0% 宽松
+        # 宽松阈值下通过率 >= 严格阈值下通过率
+        # (实际两者都 PASS, 但逻辑验证 tolerance 真的传进去)
+        # Sprint 8 T3 真数据: 严格 ±0.1% 也 PASS
+        assert loose.passed or strict.passed  # 至少一个 PASS

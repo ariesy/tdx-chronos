@@ -277,8 +277,89 @@ class Doctor:
             threshold="<= 5%",
         )
 
+    def _check_reconciliation(
+        self,
+        tolerance: float = 0.001,
+    ) -> CheckResult:
+        """检查 9: 最近 quarter 三表勾稽 (Sprint 8 T3 + Sprint 9 T1)
+
+        Args:
+            tolerance: 容差 (default 0.1%)
+
+        Returns:
+            CheckResult:
+              - passed: 3 大勾稽全部 PASS
+              - actual: "{failed}/{total} failed"
+              - threshold: f"all 3 checks pass at ±{tolerance*100:.2f}%"
+              - detail: "latest=YYYYMMDD" 或 错误信息
+        """
+        from tdx_chronos.fin.reconciliation import reconcile_quarter
+
+        import pandas as pd
+
+        fin_dir = self.parquet_root / "fin" / "parsed"
+        if not fin_dir.exists():
+            return CheckResult(
+                name="reconciliation",
+                passed=False,
+                actual="N/A",
+                threshold=f"all 3 checks pass at ±{tolerance*100:.2f}%",
+                detail="data/fin/parsed/ 不存在",
+            )
+
+        # 找最近有效 parquet (跳过空 / placeholder)
+        files = sorted(fin_dir.glob("gpcw*.parquet"), reverse=True)
+        for f in files:
+            try:
+                df = pd.read_parquet(f)
+            except Exception as e:
+                continue
+            # 跳过空 / 缺资产总计的 parquet
+            if len(df) == 0 or "资产总计" not in df.columns:
+                continue
+            # 提取 report_date 从文件名
+            try:
+                report_date = int(f.stem.replace("gpcw", ""))
+            except ValueError:
+                report_date = 0
+
+            # 跑 reconcile_quarter
+            try:
+                rec = reconcile_quarter(df, report_date=report_date, tolerance=tolerance)
+            except Exception as e:
+                return CheckResult(
+                    name="reconciliation",
+                    passed=False,
+                    actual="N/A",
+                    threshold=f"all 3 checks pass at ±{tolerance*100:.2f}%",
+                    detail=f"reconcile_quarter 报错: {e}",
+                )
+
+            failed_n = rec.failed_count
+            total_n = len(rec.checks)
+            detail = f"latest={report_date} stocks={rec.total_stocks}"
+            for c in rec.checks:
+                detail += f" · {c.name}={c.pass_rate*100:.2f}%"
+
+            return CheckResult(
+                name="reconciliation",
+                passed=rec.passed,
+                actual=f"{failed_n}/{total_n} failed",
+                threshold=f"all 3 checks pass at ±{tolerance*100:.2f}%",
+                detail=detail,
+            )
+
+        # 没找到有效 parquet
+        return CheckResult(
+            name="reconciliation",
+            passed=False,
+            actual="N/A",
+            threshold=f"all 3 checks pass at ±{tolerance*100:.2f}%",
+            detail="未找到有效 quarter parquet",
+        )
+
     def run(self) -> DoctorReport:
-        """跑全部 8 检查 → DoctorReport"""
+        """跑全部 9 检查 → DoctorReport (Sprint 9 T1 加 reconciliation)"""
         report = DoctorReport()
         db = MetaDB(self.meta_db_path)
         try:
@@ -291,6 +372,7 @@ class Doctor:
                 self._check_kline_parquet_size(),
                 self._check_index_freshness(),
                 self._check_error_rate(db),
+                self._check_reconciliation(),
             ]
         finally:
             db.close()
