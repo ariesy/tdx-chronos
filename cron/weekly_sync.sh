@@ -69,6 +69,7 @@ parsed_dir = Path(f"{TDX_ROOT}/data/fin/parsed")
 parsed_dir.mkdir(parents=True, exist_ok=True)
 
 quarter_count = 0
+db_recorded = 0
 for dat in sorted(raw_dir.glob("gpcw*.dat")) + sorted(raw_dir.glob("gpcw*.zip")):
     try:
         reader = TdxFinReader()
@@ -77,19 +78,51 @@ for dat in sorted(raw_dir.glob("gpcw*.dat")) + sorted(raw_dir.glob("gpcw*.zip"))
             out = parsed_dir / f"{dat.stem}.parquet"
             result_df.to_parquet(out, compression="zstd", compression_level=3)
             quarter_count += 1
+
+            # Sprint 8 T1 · record quarter_metadata
+            from tdx_chronos.meta.db import MetaDB
+            try:
+                # 从文件名提取 report_date (gpcwYYYYMMDD)
+                stem = dat.stem  # e.g. 'gpcw20260331'
+                date_str = stem.replace("gpcw", "").replace("gpcw", "")
+                if len(date_str) == 8 and date_str.isdigit():
+                    report_date = int(date_str)
+                    file_size = dat.stat().st_size if dat.exists() else 0
+                    stock_count = len(result_df)
+                    is_placeholder = file_size <= 164
+                    # 只记录有效 quarters (有数据 且 日期合法)
+                    if stock_count > 0 and report_date > 0:
+                        db = MetaDB("$DB_PATH")
+                        db.record_quarter_metadata(
+                            report_date=report_date,
+                            file_path=str(dat),
+                            file_size=file_size,
+                            stock_count=stock_count,
+                            parquet_path=str(out),
+                            is_placeholder=is_placeholder,
+                            parse_ok=True,
+                        )
+                        db.close()
+                        db_recorded += 1
+                    else:
+                        log.debug(f"  skip quarter_metadata {dat.name}: "
+                                  f"stock_count={stock_count} report_date={report_date}")
+            except Exception as db_err:
+                log.warning(f"  quarter_metadata skip {dat.name}: {db_err}")
     except Exception as e:
         log.warning(f"  skip {dat.name}: {e}")
 
 elapsed = time.monotonic() - start
-log.info(f"weekly_sync 完成 · quarters={quarter_count} elapsed={elapsed:.1f}s")
+log.info(f"weekly_sync 完成 · quarters={quarter_count} db_recorded={db_recorded} elapsed={elapsed:.1f}s")
 
 print()
 print("=" * 60)
 print("weekly_sync 总结")
 print("=" * 60)
-print(f"elapsed:   {elapsed:.1f}s")
-print(f"quarters:  {quarter_count}")
-print(f"tdxfin:    {result.size_bytes / 1024 / 1024:.1f} MB · sha256={result.sha256[:16]}")
+print(f"elapsed:        {elapsed:.1f}s")
+print(f"quarters:       {quarter_count}")
+print(f"db_recorded:    {db_recorded}")
+print(f"tdxfin:         {result.size_bytes / 1024 / 1024:.1f} MB · sha256={result.sha256[:16]}")
 
 sys.exit(0)
 PYEOF

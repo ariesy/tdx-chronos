@@ -80,6 +80,20 @@ class MetaDB:
     );
     CREATE INDEX IF NOT EXISTS idx_gp_market ON gp_metadata(market);
     CREATE INDEX IF NOT EXISTS idx_gp_code ON gp_metadata(code);
+
+    CREATE TABLE IF NOT EXISTS quarter_metadata (
+        report_date      INTEGER PRIMARY KEY,        -- YYYYMMDD · e.g. 20260331
+        file_path        TEXT NOT NULL,               -- 原始 gpcw{date}.zip/.dat 路径
+        file_size        INTEGER,                     -- bytes
+        stock_count      INTEGER,                     -- 解析出的股票数 (~5524)
+        parquet_path     TEXT,                        -- 输出 parquet 路径
+        is_placeholder   INTEGER NOT NULL DEFAULT 0,  -- 164B zip 占位 flag
+        parsed_at        TIMESTAMP,
+        parse_ok         INTEGER NOT NULL DEFAULT 0,  -- 0/1
+        error            TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_quarter_ok ON quarter_metadata(parse_ok);
+    CREATE INDEX IF NOT EXISTS idx_quarter_placeholder ON quarter_metadata(is_placeholder);
     """
 
     def __init__(self, db_path: str | Path):
@@ -365,6 +379,129 @@ class MetaDB:
         return conn.execute(
             "SELECT * FROM gp_metadata WHERE parse_ok=0 ORDER BY file_path LIMIT ?",
             (limit,),
+        ).fetchall()
+
+    # ---------------------------------------------------------------------
+    # CRUD · quarter_metadata (Sprint 8 T1 · 财务领域元信息)
+    # ---------------------------------------------------------------------
+
+    def init_quarter_metadata_schema(self) -> None:
+        """创建 quarter_metadata 表 (Sprint 8 T1)
+
+        Note: SCHEMA 已包含 · 保留为公开 API 以便外部调用
+        """
+        conn = self._connect()
+        with self._txn() as cur:
+            cur.executescript(self.SCHEMA)
+
+    def record_quarter_metadata(
+        self,
+        report_date: int,
+        file_path: str,
+        file_size: int,
+        stock_count: int,
+        parquet_path: Optional[str] = None,
+        is_placeholder: bool = False,
+        parse_ok: bool = True,
+        error: Optional[str] = None,
+    ) -> None:
+        """Upsert 1 行到 quarter_metadata
+
+        Args:
+            report_date:    YYYYMMDD (e.g. 20260331)
+            file_path:      原始 gpcw{date}.zip 或 .dat 路径
+            file_size:      文件大小 (bytes)
+            stock_count:    解析出的股票数 (~5524)
+            parquet_path:   输出 parquet 路径
+            is_placeholder: 164B zip 占位 (未来季未披露)
+            parse_ok:       True/False
+            error:          失败原因 (parse_ok=True 时 None)
+        """
+        conn = self._connect()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._txn() as cur:
+            cur.execute(
+                """
+                INSERT INTO quarter_metadata
+                    (report_date, file_path, file_size, stock_count,
+                     parquet_path, is_placeholder, parsed_at,
+                     parse_ok, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_date) DO UPDATE SET
+                    file_path = excluded.file_path,
+                    file_size = excluded.file_size,
+                    stock_count = excluded.stock_count,
+                    parquet_path = excluded.parquet_path,
+                    is_placeholder = excluded.is_placeholder,
+                    parsed_at = excluded.parsed_at,
+                    parse_ok = excluded.parse_ok,
+                    error = excluded.error
+                """,
+                (report_date, file_path, file_size, stock_count,
+                 parquet_path, 1 if is_placeholder else 0, now,
+                 1 if parse_ok else 0, error),
+            )
+
+    def get_quarters(
+        self,
+        parsed_only: bool = False,
+        exclude_placeholders: bool = False,
+    ) -> List[int]:
+        """返回 quarter_metadata 全部 report_date (按时间升序)
+
+        Args:
+            parsed_only:         仅 parse_ok=1
+            exclude_placeholders: 排除 is_placeholder=1
+        """
+        conn = self._connect()
+        clauses = []
+        params: list = []
+        if parsed_only:
+            clauses.append("parse_ok=1")
+        if exclude_placeholders:
+            clauses.append("is_placeholder=0")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"SELECT report_date FROM quarter_metadata {where} ORDER BY report_date",
+            params,
+        ).fetchall()
+        return [r["report_date"] for r in rows]
+
+    def count_quarters(
+        self,
+        parse_ok: Optional[bool] = None,
+        exclude_placeholders: bool = False,
+    ) -> int:
+        """quarter_metadata 总数 / parse_ok 过滤"""
+        conn = self._connect()
+        clauses = []
+        params: list = []
+        if parse_ok is not None:
+            clauses.append("parse_ok=?")
+            params.append(1 if parse_ok else 0)
+        if exclude_placeholders:
+            clauses.append("is_placeholder=0")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM quarter_metadata {where}", params,
+        ).fetchone()
+        return row["c"]
+
+    def get_quarter_stats(self) -> List[sqlite3.Row]:
+        """按 parse_ok × is_placeholder 聚合统计
+
+        Returns: rows of (parse_ok, is_placeholder, count, total_stocks)
+        """
+        conn = self._connect()
+        return conn.execute(
+            """
+            SELECT parse_ok, is_placeholder, COUNT(*) AS q_count,
+                   SUM(stock_count) AS total_stocks,
+                   SUM(file_size) AS total_bytes
+            FROM quarter_metadata
+            GROUP BY parse_ok, is_placeholder
+            ORDER BY parse_ok DESC, is_placeholder DESC
+            """,
         ).fetchall()
 
     # ---------------------------------------------------------------------

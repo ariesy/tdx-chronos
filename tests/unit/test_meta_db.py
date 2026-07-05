@@ -221,3 +221,103 @@ class TestIntegration:
         ).fetchone()
         assert row["first_listing_date"] == 19991110
         assert row["record_count"] == 6338
+
+
+# ---------------------------------------------------------------------
+# TestQuarterMetadata (Sprint 8 T1)
+# ---------------------------------------------------------------------
+class TestQuarterMetadata:
+    """Sprint 8 T1 · quarter_metadata 表 CRUD 测试"""
+
+    def test_init_quarter_metadata_schema_creates_table(self, db):
+        """init_quarter_metadata_schema 幂等创建 quarter_metadata 表"""
+        # init_schema 已经调过 (fixture)
+        conn = db._connect()
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='quarter_metadata'"
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_record_quarter_metadata_basic(self, db):
+        """Upsert 基本字段"""
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path="/app/tdx-chronos/data/snapshot/2026-07-04/raw/gpcw20260331.zip",
+            file_size=12_960_000,
+            stock_count=5524,
+            parquet_path="data/fin/parsed/gpcw20260331.parquet",
+        )
+        assert db.count_quarters() == 1
+        assert db.count_quarters(parse_ok=True) == 1
+        assert 20260331 in db.get_quarters()
+
+    def test_record_quarter_metadata_placeholder(self, db):
+        """164B 占位 zip 标记 is_placeholder=1"""
+        db.record_quarter_metadata(
+            report_date=20261231,  # 未来季
+            file_path="/app/tdx-chronos/data/snapshot/2026-07-04/raw/gpcw20261231.zip",
+            file_size=164,
+            stock_count=0,
+            parquet_path=None,
+            is_placeholder=True,
+        )
+        # 包含 placeholder
+        assert db.count_quarters() == 1
+        # exclude_placeholders 过滤掉
+        assert db.count_quarters(exclude_placeholders=True) == 0
+        assert db.get_quarters(exclude_placeholders=True) == []
+
+    def test_get_quarters_parsed_only(self, db):
+        """parsed_only=True 仅返回 parse_ok=1 的 quarters"""
+        # 成功
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path="/x/gpcw20260331.zip",
+            file_size=12960000,
+            stock_count=5524,
+            parse_ok=True,
+        )
+        # 失败
+        db.record_quarter_metadata(
+            report_date=20251231,
+            file_path="/x/gpcw20251231.zip",
+            file_size=12_000_000,
+            stock_count=0,
+            parse_ok=False,
+            error="corrupt zip",
+        )
+        # 全部
+        assert db.count_quarters() == 2
+        # parsed only
+        assert db.get_quarters(parsed_only=True) == [20260331]
+
+    def test_quarter_metadata_upsert_updates(self, db):
+        """重复 record 同一个 report_date 会更新 (不是插入)"""
+        # 第一次
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path="/x/old.zip",
+            file_size=10_000_000,
+            stock_count=5000,
+            parse_ok=True,
+        )
+        assert db.count_quarters() == 1
+        # 第二次 (同 date · 更新)
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path="/x/new.zip",
+            file_size=12_960_000,
+            stock_count=5524,
+            parse_ok=True,
+        )
+        # 还是 1 行
+        assert db.count_quarters() == 1
+        # 但 stock_count 更新了
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT stock_count, file_size FROM quarter_metadata WHERE report_date=?",
+            (20260331,),
+        ).fetchone()
+        assert row["stock_count"] == 5524
+        assert row["file_size"] == 12_960_000
