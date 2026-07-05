@@ -1,5 +1,9 @@
 #!/bin/bash
-# Sprint 5 · weekly_doctor.sh · 03:00 周日
+# Sprint 9 T4 修正 · weekly_doctor.sh · 周日 03:00 Shanghai
+# 修复点 (Sprint 5 → Sprint 9):
+# - 使用 Sprint 9 T4 alert_if_unhealthy (替代 hardcoded if-elif)
+# - 失败数动态 (10 checks 当前 · 而不是 hardcoded "8")
+# - DRY-RUN 由 TDX_DRY_RUN env var 控制 (默认 1, 上线后改为 0)
 set -euo pipefail
 TDX_ROOT="/app/tdx-chronos"
 LOG_DIR="$TDX_ROOT/logs/cron"
@@ -12,33 +16,28 @@ cd "$TDX_ROOT"
 export PYTHONPATH=src:vendor/_vendor
 
 .venv/bin/python << 'PYEOF' | tee -a /tmp/weekly_doctor_inner.log
+"""Sprint 9 T4 修 · weekly_doctor.sh 内容
+
+修复: 使用 alert_if_unhealthy (Sprint 9 T4) 替代 hardcoded 8/8 if-elif
+"""
+import os
 from tdx_chronos.doctor import Doctor
 from tdx_chronos.alertor import Alertor
+
+# dry_run 默认 True · 上线生产时设 TDX_DRY_RUN=0
+dry_run = os.environ.get("TDX_DRY_RUN", "1") == "1"
+alertor = Alertor(dry_run=dry_run)
 
 report = Doctor().run()
 print(report.summary)
 
-# unhealthy → 飞书告警 (cron 会自动投递到 chat_id)
-alertor = Alertor(dry_run=False)
-if report.level == "unhealthy":
-    alertor.send_alert(
-        level="critical",
-        summary=f"Doctor unhealthy: {report.failed_count}/8 failed",
-        detail=report.summary,
-        source="weekly_doctor.sh",
-    )
-elif report.level == "degraded":
-    alertor.send_alert(
-        level="warning",
-        summary=f"Doctor degraded: {report.failed_count}/8 failed",
-        detail=report.summary,
-        source="weekly_doctor.sh",
-    )
+# Sprint 9 T4 API: alert_if_unhealthy 自动按 level 分发 tone
+# - healthy   → 不发
+# - degraded  → warning
+# - unhealthy → error (danger tone)
+result = Doctor().alert_if_unhealthy(report, alertor=alertor)
+if result is None:
+    print(f"healthy level · no alert · {report.failed_count}/{len(report.checks)} failed")
 else:
-    alertor.send_alert(
-        level="success",
-        summary="Doctor healthy · 8/8 passed",
-        detail=report.summary,
-        source="weekly_doctor.sh",
-    )
+    print(f"alert sent · level={report.level} · tone={result.tone}")
 PYEOF
