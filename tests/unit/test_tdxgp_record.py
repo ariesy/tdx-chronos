@@ -147,3 +147,23 @@ class TestTdxGpRecordFullParse:
         assert summary.parsed_ok == 1
         # 第 1 个 (sorted) 是 bj430017 (6257 records)
         assert summary.output_rows == 6257
+
+
+class TestTdxGpRecordFilterGpcw:
+    """Sprint 6: gpcw 财务文件被误识别为股本 · 修复验证"""
+
+    def test_gpcw_files_skipped(self, tmp_path):
+        """gpcw*.dat 不应被 iter_quarters 抓到"""
+        # 模拟 raw dir
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        # 创建 gpsh600519.dat (股本)
+        (raw / "gpsh600519.dat").write_bytes(b"\x00" * 32)
+        # 创建 gpcw20260331.dat (财务 · 不应被股本抓)
+        (raw / "gpcw20260331.dat").write_bytes(b"\x00" * 32)
+
+        infos = list(TdxGpRecordReader.iter_quarters(raw))
+        # 只有 1 个股本 · gpcw 被跳过
+        assert len(infos) == 1
+        assert infos[0].market == "sh"
+        assert infos[0].code == "600519"

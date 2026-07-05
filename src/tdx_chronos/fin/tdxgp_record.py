@@ -255,10 +255,19 @@ class TdxGpRecordReader:
 
     @staticmethod
     def iter_quarters(raw_dir: Path) -> Iterator[GpRecordsFile]:
-        """遍历 raw_dir 下所有 gp*.dat · yield GpRecordsFile"""
+        """遍历 raw_dir 下所有股本 .dat · yield GpRecordsFile
+
+        只接受 gp{sh,sz,bj} 前缀的股本文件 (例如 gpsh600519.dat)
+        跳过 gpcw* 财务文件 (它们以 'gp' 开头但其实是财务)
+        """
+        import re
         raw_dir = Path(raw_dir)
+        # 只匹配 gpsh / gpsz / gpbj 前缀 (3 个市场)
+        pattern = re.compile(r"^gp(sh|sz|bj)\d{6}\.dat$")
         for path in sorted(raw_dir.glob("gp*.dat")):
-            yield TdxGpRecordReader.parse_file(path)
+            if pattern.match(path.name):
+                yield TdxGpRecordReader.parse_file(path)
+            # else: 跳过 gpcw* 财务文件 (它们以 'gp' 开头)
 
     @staticmethod
     def run_full_parse(
