@@ -358,8 +358,52 @@ class Doctor:
             detail="未找到有效 quarter parquet",
         )
 
+    def _check_quarter_metadata(self, db: MetaDB) -> CheckResult:
+        """检查 10: quarter_metadata (Sprint 8 T1 · Sprint 9 T2)
+
+        Args:
+            db: MetaDB instance
+
+        Returns:
+            CheckResult:
+              - passed: parsed_count >= min_parsed AND parse_ok_ratio >= min_ratio
+              - actual: f"{parsed}/{total_non_placeholder} parsed ({ratio*100:.1f}% ok)"
+              - threshold: f">= {min_parsed} parsed · >= {min_ratio*100:.0f}% ok"
+              - detail: quarter_stats 聚合 或 错误信息
+        """
+        # 默认阈值: 100 parsed quarters + 95% ok ratio
+        min_parsed = 100
+        min_ratio = 0.95
+
+        total_non_placeholder = db.count_quarters(exclude_placeholders=True)
+        parsed_count = db.count_quarters(
+            parse_ok=True, exclude_placeholders=True,
+        )
+        ratio = (parsed_count / total_non_placeholder
+                 if total_non_placeholder > 0 else 0.0)
+
+        passed = (parsed_count >= min_parsed) and (ratio >= min_ratio)
+
+        # 详细 stats (top 2 categories)
+        detail_parts = []
+        stats = db.get_quarter_stats()
+        for row in stats[:4]:
+            detail_parts.append(
+                f"parse_ok={row['parse_ok']} ph={row['is_placeholder']}: "
+                f"{row['q_count']}"
+            )
+        detail = f"stats: {', '.join(detail_parts)}"
+
+        return CheckResult(
+            name="quarter_metadata",
+            passed=passed,
+            actual=f"{parsed_count}/{total_non_placeholder} parsed ({ratio*100:.1f}% ok)",
+            threshold=f">= {min_parsed} parsed · >= {min_ratio*100:.0f}% ok",
+            detail=detail,
+        )
+
     def run(self) -> DoctorReport:
-        """跑全部 9 检查 → DoctorReport (Sprint 9 T1 加 reconciliation)"""
+        """跑全部 10 检查 → DoctorReport (Sprint 9 T1+T2)"""
         report = DoctorReport()
         db = MetaDB(self.meta_db_path)
         try:
@@ -373,6 +417,7 @@ class Doctor:
                 self._check_index_freshness(),
                 self._check_error_rate(db),
                 self._check_reconciliation(),
+                self._check_quarter_metadata(db),
             ]
         finally:
             db.close()

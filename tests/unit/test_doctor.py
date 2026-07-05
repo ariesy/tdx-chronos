@@ -35,18 +35,19 @@ class TestDoctorHealthy:
         report = Doctor().run()
         # 不强求 healthy (可能 K线没到位) 但 level 必在 3 选 1
         assert report.level in {LEVEL_HEALTHY, LEVEL_DEGRADED, LEVEL_UNHEALTHY}
-        # Sprint 9 T1 加 reconciliation → 9 个 check
-        assert len(report.checks) == 9
+        # Sprint 9 T1+T2 加 reconciliation + quarter_metadata → 10 个 check
+        assert len(report.checks) == 10
 
     def test_real_data_8_checks_present(self):
         report = Doctor().run()
         names = {c.name for c in report.checks}
-        # Sprint 9 T1 加 reconciliation → 9 个 check
+        # Sprint 9 T1+T2 加 reconciliation + quarter_metadata → 10 个 check
         expected = {
             "kline_symbols", "financial_quarters", "gp_records",
             "index_records", "download_log_7d_success_rate",
             "kline_parquet_size_mb", "index_freshness_days", "error_rate",
             "reconciliation",  # Sprint 9 T1
+            "quarter_metadata",  # Sprint 9 T2
         }
         assert names == expected
 
@@ -67,6 +68,9 @@ class TestDoctorDegraded:
         mock_db = MagicMock()
         mock_db.count_symbols.return_value = 0  # 0 vs expected 12,256 → 失败
         mock_db.get_recent_downloads.return_value = []
+        # Sprint 9 T2: quarter_metadata mock · 0 quarters
+        mock_db.count_quarters.return_value = 0
+        mock_db.get_quarter_stats.return_value = []
         monkeypatch.setattr("tdx_chronos.doctor.MetaDB", lambda *a, **kw: mock_db)
 
         report = Doctor(meta_db_path=empty_db, parquet_root=empty_parquet).run()
@@ -88,6 +92,9 @@ class TestDoctorUnhealthy:
         mock_db = MagicMock()
         mock_db.count_symbols.return_value = 0
         mock_db.get_recent_downloads.return_value = []
+        # Sprint 9 T2: quarter_metadata mock · 0 quarters
+        mock_db.count_quarters.return_value = 0
+        mock_db.get_quarter_stats.return_value = []
         monkeypatch.setattr("tdx_chronos.doctor.MetaDB", lambda *a, **kw: mock_db)
 
         report = Doctor(meta_db_path=empty_db, parquet_root=empty_parquet).run()
@@ -213,3 +220,62 @@ class TestDoctorReconciliation:
         # (实际两者都 PASS, 但逻辑验证 tolerance 真的传进去)
         # Sprint 8 T3 真数据: 严格 ±0.1% 也 PASS
         assert loose.passed or strict.passed  # 至少一个 PASS
+
+
+# ---------------------------------------------------------------------
+# TestDoctorQuarterMetadata (Sprint 9 T2)
+# ---------------------------------------------------------------------
+class TestDoctorQuarterMetadata:
+    """Sprint 9 T2 · doctor.py quarter_metadata 健康检查 (4 测试)"""
+
+    def test_check_quarter_metadata_returns_checkresult(self):
+        """_check_quarter_metadata 返回 CheckResult"""
+        from tdx_chronos.meta.db import MetaDB
+        from pathlib import Path
+        db = MetaDB(Path('/app/tdx-chronos/data/meta/meta.db'))
+        try:
+            result = Doctor()._check_quarter_metadata(db)
+            assert isinstance(result, CheckResult)
+            assert result.name == "quarter_metadata"
+        finally:
+            db.close()
+
+    def test_check_quarter_metadata_count_above_100(self):
+        """meta.db 有 >= 100 parsed quarters (Sprint 8 T1 集成)"""
+        from tdx_chronos.meta.db import MetaDB
+        from pathlib import Path
+        db = MetaDB(Path('/app/tdx-chronos/data/meta/meta.db'))
+        try:
+            result = Doctor()._check_quarter_metadata(db)
+            # Sprint 8 T1 验证: 120 unique quarters recorded
+            assert "120/" in str(result.actual) or "/120" in str(result.actual), \
+                f"应含 120 quarters · actual={result.actual}"
+            assert result.passed, f"应 PASS · detail={result.detail}"
+        finally:
+            db.close()
+
+    def test_check_quarter_metadata_parse_ok_ratio(self):
+        """parse_ok ratio 应 >= 95% (Sprint 8 T1 验证: 100% 都 ok)"""
+        from tdx_chronos.meta.db import MetaDB
+        from pathlib import Path
+        db = MetaDB(Path('/app/tdx-chronos/data/meta/meta.db'))
+        try:
+            result = Doctor()._check_quarter_metadata(db)
+            # 排除 placeholder 后 parse_ok ratio
+            assert "100.0% ok" in str(result.actual), \
+                f"应 100% ok · actual={result.actual}"
+        finally:
+            db.close()
+
+    def test_check_quarter_metadata_empty_db(self, tmp_path):
+        """空 db → parsed=0 → FAIL"""
+        from tdx_chronos.meta.db import MetaDB
+        db = MetaDB(tmp_path / 'empty.db')
+        db.init_schema()
+        try:
+            result = Doctor()._check_quarter_metadata(db)
+            assert result.passed is False
+            assert "0/0" in str(result.actual)
+            assert result.detail  # 有统计信息
+        finally:
+            db.close()
