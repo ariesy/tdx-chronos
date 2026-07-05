@@ -43,17 +43,20 @@ class TestToCategorizedBasic:
         # type=47 only ~570K
         assert len(df) > 100_000
 
-    def test_rare_event_empty_in_clean_data(self):
-        """clean data (gpcw 过滤后) 只有 type 1-48 · rare_event (49-255) 为空"""
+    def test_rare_event_includes_long_tails(self):
+        """Sprint 7: rare_event 包含 49-255 + 15 个长尾 (1-48 < 100K)"""
         df = TdxGpRecordReader.to_categorized(RECORDS_PATH, "rare_event")
-        # Sprint 6 摸排真相: 修 bug 后 type 49-255 仅 1 records (data/gp/.dat metadata 残留)
-        assert len(df) <= 100  # 几乎为 0 (gpcw 误识别修复后的清理效果)
+        # Sprint 7: rare_event 包含 9 个长尾 (2, 23, 26, 28, 29, 30, 33, 34, 37)
+        # + 6 个 (41, 42, 43, 44, 46, 48) + 49-255 (1 个)
+        # 总 ~750K records
+        assert len(df) >= 500_000, f"too small: {len(df):,}"
+        assert len(df) <= 2_000_000, f"too large: {len(df):,}"
 
     def test_total_records_matches_full_data(self):
-        """4 大类 + rare_event 总 records 验证 (内存安全版)
+        """Sprint 7: 4 大类 + rare_event 总 records 验证
 
         实现要点: 单次 read_table + pc.is_in 过滤 · 不重复加载 parquet
-        Sprint 6 v1.1: 14 types 已分类 · rare_event 包含 type 49-255 + 28 个未分类
+        Sprint 7: 33 types 已分类 · rare_event 222 types
         """
         import pyarrow.parquet as pq
         import pyarrow.compute as pc
@@ -67,11 +70,9 @@ class TestToCategorizedBasic:
             cat_count = pc.sum(mask.cast("int64")).as_py()
             total += cat_count
 
-        # Sprint 6 实证: 4 categories 已分类 ~83M (14 types 分类)
-        # + rare_event (49-255) 几乎为 0 (clean data)
-        # 未分类 type 1-48 (28 types) ~37M · v2.0 待补充 (不计入总和)
-        assert total >= 80_000_000, f"total too small: {total:,}"
-        assert total <= 90_000_000, f"total too large: {total:,}"
+        # Sprint 7 实证: 4 categories 已分类 ~119.5M + rare_event ~750K ≈ 120.3M
+        assert total >= 119_000_000, f"total too small: {total:,}"
+        assert total <= 121_000_000, f"total too large: {total:,}"
 
     def test_capital_share_dominates_4_categories(self):
         """capital_share 在 4 类别中应最大 (内存安全版)"""
@@ -97,15 +98,15 @@ class TestToCategorizedBasic:
 # ---------------------------------------------------------------------
 class TestToCategorizedCode:
     def test_maotai_capital_share(self):
-        """茅台 (600519) capital_share 过滤"""
+        """Sprint 7: 茅台 (600519) capital_share 过滤 (27 types)"""
         df = TdxGpRecordReader.to_categorized(
             RECORDS_PATH, "capital_share", code="600519"
         )
         assert (df["code"] == "600519").all()
-        # 茅台 8 types 总和应 >= 10000
+        # 茅台 capital_share 27 types 总和应 >= 10K
         assert len(df) >= 10_000
-        # 8 types 都应出现
-        assert df["type"].nunique() == 8
+        # Sprint 7: 27 types 都可能出现 (不一定是全部)
+        assert df["type"].nunique() >= 8  # Sprint 6 + Sprint 7 扩展
 
     def test_maotai_quarterly_snapshot_type1(self):
         """茅台 type=1 (季末快照) 104 records"""
