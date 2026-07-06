@@ -41,8 +41,8 @@ snap = Path("$SNAP_DIR")
 
 # 单 zip 下载
 result = dl.download_one(
-    spec={"name": "tdxfin", "url": "https://data.tdx.com.cn/vipdoc/tdxfin.zip",
-          "approx_size": 537_000_000},
+    zip_spec={"name": "tdxfin", "url": "https://data.tdx.com.cn/vipdoc/tdxfin.zip",
+              "approx_size": 537_000_000},
     snap_dir=snap,
     max_retries=3,
 )
@@ -53,8 +53,8 @@ if result.status != "success":
     log.error(f"tdxfin 下载失败: {result.error}")
     sys.exit(2)
 
-# Step 2: 解压 (unzip -d $snap/raw tdxfin.zip)
-log.info("Step 2: 解压 tdxfin → $snap/raw")
+# Step 2: 解压 (unzip -d \$snap/raw tdxfin.zip)
+log.info("Step 2: 解压 tdxfin → \$snap/raw")
 import zipfile
 zip_path = snap / "tdxfin.zip"
 with zipfile.ZipFile(zip_path) as zf:
@@ -70,43 +70,31 @@ parsed_dir.mkdir(parents=True, exist_ok=True)
 
 quarter_count = 0
 db_recorded = 0
-for dat in sorted(raw_dir.glob("gpcw*.dat")) + sorted(raw_dir.glob("gpcw*.zip")):
+for dat in sorted(raw_dir.glob("gpcw*.zip")) + sorted(raw_dir.glob("gpcw*.dat")):
     try:
-        reader = TdxFinReader()
-        result_df = reader.read(dat)
-        if result_df is not None:
-            out = parsed_dir / f"{dat.stem}.parquet"
-            result_df.to_parquet(out, compression="zstd", compression_level=3)
-            quarter_count += 1
+        # TdxFinReader API: parse_quarter(path, output_dir) → QuarterData
+        q = TdxFinReader.parse_quarter(dat, output_dir=parsed_dir)
+        if q.is_placeholder:
+            continue
+        quarter_count += 1
 
-            # Sprint 8 T1 · record quarter_metadata
-            from tdx_chronos.meta.db import MetaDB
+        # Sprint 8 T1 · record quarter_metadata
+        from tdx_chronos.meta.db import MetaDB
+        # 只记录有效 quarters (有数据 且 日期合法)
+        if len(q.df) > 0 and q.report_date > 0:
             try:
-                # 从文件名提取 report_date (gpcwYYYYMMDD)
-                stem = dat.stem  # e.g. 'gpcw20260331'
-                date_str = stem.replace("gpcw", "").replace("gpcw", "")
-                if len(date_str) == 8 and date_str.isdigit():
-                    report_date = int(date_str)
-                    file_size = dat.stat().st_size if dat.exists() else 0
-                    stock_count = len(result_df)
-                    is_placeholder = file_size <= 164
-                    # 只记录有效 quarters (有数据 且 日期合法)
-                    if stock_count > 0 and report_date > 0:
-                        db = MetaDB("$DB_PATH")
-                        db.record_quarter_metadata(
-                            report_date=report_date,
-                            file_path=str(dat),
-                            file_size=file_size,
-                            stock_count=stock_count,
-                            parquet_path=str(out),
-                            is_placeholder=is_placeholder,
-                            parse_ok=True,
-                        )
-                        db.close()
-                        db_recorded += 1
-                    else:
-                        log.debug(f"  skip quarter_metadata {dat.name}: "
-                                  f"stock_count={stock_count} report_date={report_date}")
+                db = MetaDB("$DB_PATH")
+                db.record_quarter_metadata(
+                    report_date=q.report_date,
+                    file_path=str(q.raw_path),
+                    file_size=q.raw_path.stat().st_size if q.raw_path.exists() else 0,
+                    stock_count=len(q.df),
+                    parquet_path=str(parsed_dir / f"gpcw{q.report_date}.parquet"),
+                    is_placeholder=False,
+                    parse_ok=True,
+                )
+                db.close()
+                db_recorded += 1
             except Exception as db_err:
                 log.warning(f"  quarter_metadata skip {dat.name}: {db_err}")
     except Exception as e:
@@ -122,7 +110,7 @@ print("=" * 60)
 print(f"elapsed:        {elapsed:.1f}s")
 print(f"quarters:       {quarter_count}")
 print(f"db_recorded:    {db_recorded}")
-print(f"tdxfin:         {result.size_bytes / 1024 / 1024:.1f} MB · sha256={result.sha256[:16]}")
+print(f"tdxfin:         {(result.size_bytes or 0) / 1024 / 1024:.1f} MB · sha256={(result.sha256 or 'unknown')[:16]}")
 
 sys.exit(0)
 PYEOF
