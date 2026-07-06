@@ -65,7 +65,7 @@ log.info("Step 3: 财务全量解析 (258 季度)")
 from tdx_chronos.fin.tdxfin import TdxFinReader
 
 raw_dir = snap / "raw"
-parsed_dir = Path(f"{TDX_ROOT}/data/fin/parsed")
+parsed_dir = Path("$TDX_ROOT/data/fin/parsed")
 parsed_dir.mkdir(parents=True, exist_ok=True)
 
 quarter_count = 0
