@@ -153,6 +153,25 @@ class TestRecordDownload:
         # 最新的在前面
         assert rows[0]["zip_name"] == "tdxgp.zip"
 
+    def test_upgrade_pending_downloads(self, db):
+        """批量升级 pending → success (7d window)"""
+        # 插 5 行 pending
+        for i in range(5):
+            db.record_download(f"zip{i}.zip", "m1", 100, f"h{i}")
+        # 插 1 行 failed (不应被升级)
+        rid_failed = db.record_download("failed.zip", "m1", 100, "h_fail")
+        db.update_parse_status(rid_failed, PARSE_STATUS_FAILED)
+
+        upgraded = db.upgrade_pending_downloads(success_threshold=1)
+        assert upgraded == 5
+
+        rows = db.get_recent_downloads(limit=10)
+        status_count = {}
+        for r in rows:
+            status_count[r["parse_status"]] = status_count.get(r["parse_status"], 0) + 1
+        assert status_count.get(PARSE_STATUS_SUCCESS) == 5
+        assert status_count.get(PARSE_STATUS_FAILED) == 1
+
 
 # ---------------------------------------------------------------------
 # TestGetUnparsedFiles

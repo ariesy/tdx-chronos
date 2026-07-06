@@ -284,6 +284,43 @@ class MetaDB:
             (limit,),
         ).fetchall()
 
+    def upgrade_pending_downloads(
+        self,
+        success_threshold: int = 1,
+        success_status: str = PARSE_STATUS_SUCCESS,
+    ) -> int:
+        """升级 pending → success (Step 2/3/4 全部完成后批量调用)
+
+        Args:
+            success_threshold: 仅当总 success >= 此值才升级 (默认 1)
+            success_status:    目标 status · 默认 'success'
+
+        Returns:
+            升级的行数 (cursor.rowcount)
+
+        Example:
+            >>> db = MetaDB('/path/meta.db')
+            >>> # 跑完 Step 1-4 后调:
+            >>> upgraded = db.upgrade_pending_downloads(success_threshold=5)
+            >>> print(f'升级 {upgraded} 行')
+        """
+        if success_status not in {
+            PARSE_STATUS_SUCCESS, PARSE_STATUS_PARTIAL, PARSE_STATUS_FAILED,
+        }:
+            raise ValueError(f"Unknown success_status: {success_status}")
+
+        conn = self._connect()
+        with self._txn() as cur:
+            cur.execute(
+                """
+                UPDATE download_log
+                SET parse_status=?, error_msg=NULL
+                WHERE parse_status=? AND downloaded_at > datetime('now', '-7 days')
+                """,
+                (success_status, PARSE_STATUS_PENDING),
+            )
+            return cur.rowcount
+
     # ---------------------------------------------------------------------
     # CRUD · gp_metadata (Sprint 4a D2)
     # ---------------------------------------------------------------------

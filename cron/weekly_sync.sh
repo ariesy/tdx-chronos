@@ -121,6 +121,16 @@ for dat in sorted(raw_dir.glob("gpcw*.zip")) + sorted(raw_dir.glob("gpcw*.dat"))
 elapsed = time.monotonic() - start
 log.info(f"weekly_sync 完成 · quarters={quarter_count} db_recorded={db_recorded} elapsed={elapsed:.1f}s")
 
+# 升级 download_log: pending → success (Step 1-3 全部成功后)
+try:
+    db = MetaDB("$DB_PATH")
+    upgraded = db.upgrade_pending_downloads(success_threshold=1, success_status=PARSE_STATUS_SUCCESS)
+    db.close()
+    if upgraded:
+        log.info(f"download_log 升级: pending→success {upgraded} 行")
+except Exception as e:
+    log.warning(f"  upgrade pending downloads skip: {e}")
+
 print()
 print("=" * 60)
 print("weekly_sync 总结")

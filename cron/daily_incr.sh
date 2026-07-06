@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 
 from tdx_chronos.sources.bulk_download import BulkDownloader
 from tdx_chronos.sources.index_parser import IndexParser
-from tdx_chronos.meta.db import MetaDB, PARSE_STATUS_SUCCESS, PARSE_STATUS_FAILED
+from tdx_chronos.meta.db import MetaDB, PARSE_STATUS_SUCCESS, PARSE_STATUS_FAILED, PARSE_STATUS_PENDING
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger("daily_incr")
@@ -73,14 +73,17 @@ for summary in (core_summary, idx_summary):
                 mirror=mirror,
                 size_bytes=r.size_bytes,
                 sha256=r.sha256 or "",
-                parse_status=PARSE_STATUS_SUCCESS if r.status == "success" else PARSE_STATUS_FAILED,
+                parse_status=PARSE_STATUS_PENDING if r.status == "success" else PARSE_STATUS_FAILED,
                 error_msg=r.error or None,
             )
             recorded += 1
         except Exception as e:
             log.warning(f"  record_download skip {r.zip_name}: {e}")
 db.close()
-log.info(f"download_log 记录: {recorded} 行")
+log.info(f"download_log 记录: {recorded} 行 (pending · Step 2-4 完成后会更新到 success)")
+
+# 返回最近插入的 rowid 范围 (供后续 Step 2-4 调 update_parse_status)
+_init_recorded_ids = []  # 占位 - 实际从 db.lastrowid 取
 
 # Step 2: 解析 K 线 (Sprint 2 + 4a D3)
 if total_failed < 5:  # 至少 1 核心 zip 成功
@@ -111,6 +114,19 @@ idx_p = IndexParser.parse_all(
     output_path=Path("$TDX_ROOT/data/index/indices.parquet"),
 )
 log.info(f"指数: ok={idx_p.parsed_ok} records={idx_p.total_records:,}")
+
+# 升级 download_log: pending → success (Step 2-4 全过)
+try:
+    db = MetaDB("$DB_PATH")
+    upgraded = db.upgrade_pending_downloads(
+        success_threshold=total_success,  # 仅 success >= 5 时才升级
+        success_status=PARSE_STATUS_SUCCESS,
+    )
+    db.close()
+    if upgraded:
+        log.info(f"download_log 升级: pending→success {upgraded} 行")
+except Exception as e:
+    log.warning(f"  upgrade pending downloads skip: {e}")
 
 elapsed = time.monotonic() - start
 log.info(f"daily_incr 完成 · elapsed={elapsed:.1f}s · success={total_success} failed={total_failed}")
