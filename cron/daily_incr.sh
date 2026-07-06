@@ -64,7 +64,7 @@ if total_failed < 5:  # 至少 1 核心 zip 成功
     from tdx_chronos.sources.official_zip import run_full_parse
     fs = run_full_parse(
         f"{snap}/raw",
-        f"{TDX_ROOT}/data/parquet_compact",
+        "$TDX_ROOT/data/parquet_compact",
         "$DB_PATH",
         show_progress=False,
     )
@@ -75,7 +75,7 @@ log.info("Step 3: 股本 → records.parquet")
 from tdx_chronos.fin.tdxgp_record import TdxGpRecordReader
 gp_summary = TdxGpRecordReader.run_full_parse(
     raw_dir=snap / "raw",
-    output_path=Path(f"{TDX_ROOT}/data/gp/records.parquet"),
+    output_path=Path("$TDX_ROOT/data/gp/records.parquet"),
     db_path=None,
 )
 log.info(f"股本: ok={gp_summary.parsed_ok} records={gp_summary.total_records:,}")
@@ -84,7 +84,7 @@ log.info(f"股本: ok={gp_summary.parsed_ok} records={gp_summary.total_records:,
 log.info("Step 4: 5 指数 → indices.parquet")
 idx_p = IndexParser.parse_all(
     raw_dir=snap / "raw",
-    output_path=Path(f"{TDX_ROOT}/data/index/indices.parquet"),
+    output_path=Path("$TDX_ROOT/data/index/indices.parquet"),
 )
 log.info(f"指数: ok={idx_p.parsed_ok} records={idx_p.total_records:,}")
 
