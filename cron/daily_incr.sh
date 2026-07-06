@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 
 from tdx_chronos.sources.bulk_download import BulkDownloader
 from tdx_chronos.sources.index_parser import IndexParser
+from tdx_chronos.meta.db import MetaDB, PARSE_STATUS_SUCCESS, PARSE_STATUS_FAILED
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger("daily_incr")
@@ -57,6 +58,29 @@ report.append(("index_zip", idx_summary.success_count, idx_summary.failed_count)
 total_success = core_summary.success_count + idx_summary.success_count
 total_failed = core_summary.failed_count + idx_summary.failed_count
 log.info(f"下载完成: success={total_success} failed={total_failed}")
+
+# Sprint 5+ · record 每 zip 到 meta.db download_log
+# Phase 4 verification: 没这一行 doctor.download_log_7d_success_rate 拿不到数据
+db = MetaDB("$DB_PATH")
+recorded = 0
+for summary in (core_summary, idx_summary):
+    for r in summary.results:
+        try:
+            from urllib.parse import urlparse
+            mirror = urlparse(r.url).netloc or "unknown"
+            db.record_download(
+                zip_name=r.zip_name,
+                mirror=mirror,
+                size_bytes=r.size_bytes,
+                sha256=r.sha256 or "",
+                parse_status=PARSE_STATUS_SUCCESS if r.status == "success" else PARSE_STATUS_FAILED,
+                error_msg=r.error or None,
+            )
+            recorded += 1
+        except Exception as e:
+            log.warning(f"  record_download skip {r.zip_name}: {e}")
+db.close()
+log.info(f"download_log 记录: {recorded} 行")
 
 # Step 2: 解析 K 线 (Sprint 2 + 4a D3)
 if total_failed < 5:  # 至少 1 核心 zip 成功

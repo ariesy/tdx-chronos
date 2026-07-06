@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from tdx_chronos.sources.bulk_download import BulkDownloader
+from tdx_chronos.meta.db import MetaDB, PARSE_STATUS_SUCCESS, PARSE_STATUS_FAILED
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger("weekly_sync")
@@ -52,6 +53,23 @@ log.info(f"下载: status={result.status} size={result.size_bytes:,} retries={re
 if result.status != "success":
     log.error(f"tdxfin 下载失败: {result.error}")
     sys.exit(2)
+
+# Sprint 5+ · record tdxfin.zip 到 meta.db download_log
+# Phase 4 verification: Doctor.download_log_7d_success_rate 依赖这个
+try:
+    db = MetaDB("$DB_PATH")
+    db.record_download(
+        zip_name="tdxfin",
+        mirror="data.tdx.com.cn",
+        size_bytes=result.size_bytes,
+        sha256=result.sha256 or "",
+        parse_status=PARSE_STATUS_SUCCESS if result.status == "success" else PARSE_STATUS_FAILED,
+        error_msg=result.error or None,
+    )
+    db.close()
+    log.info("download_log 记录: tdxfin")
+except Exception as e:
+    log.warning(f"  record_download skip tdxfin: {e}")
 
 # Step 2: 解压 (unzip -d \$snap/raw tdxfin.zip)
 log.info("Step 2: 解压 tdxfin → \$snap/raw")
