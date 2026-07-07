@@ -130,3 +130,73 @@ class TdxChronos:
                 "SELECT symbol FROM symbol_metadata ORDER BY symbol"
             ).fetchall()
         return [r["symbol"] for r in rows]
+
+    # ─── Task 4: kline (pyarrow predicate pushdown) ──────────────────────────
+
+    def kline(
+        self,
+        symbol: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        columns: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """K 线 · 单 symbol · pandas DataFrame (sorted by date ASC)
+
+        Args:
+            symbol: 'sh600000' / 'sz000001' / 'bj838000'
+            start:  起始日期 (inclusive) · 'YYYY-MM-DD' or 'YYYYMMDD'
+            end:    截止日期 (inclusive)
+            columns:  子集 columns · None=全部
+
+        Returns:
+            DataFrame [date, open, high, low, close, volume, amount]
+            找不到返回 empty DataFrame (不 raise)
+        """
+        import pyarrow.parquet as pq
+
+        norm = _normalize_symbol(symbol)
+        market = norm[:2]
+        market_file = self.parquet_compact / f"{market}.parquet"
+
+        if not market_file.exists():
+            return pd.DataFrame()
+
+        filters = [("symbol", "=", norm)]
+        if start:
+            filters.append(("date", ">=", _to_yyyymmdd_int(start)))
+        if end:
+            filters.append(("date", "<=", _to_yyyymmdd_int(end)))
+
+        try:
+            table = pq.read_table(market_file, filters=filters, columns=columns)
+        except Exception:
+            return pd.DataFrame()
+
+        df = table.to_pandas()
+        if not df.empty:
+            # kline return cols: no symbol column (already used for predicate)
+            if "symbol" in df.columns:
+                df = df.drop(columns=["symbol"])
+            df = df.sort_values("date").reset_index(drop=True)
+        return df
+
+
+def _normalize_symbol(symbol: str) -> str:
+    """Normalize bare 6-digit codes to sh/sz/bj prefix"""
+    s = symbol.lower().strip()
+    if s.startswith(("sh", "sz", "bj")):
+        return s
+    if len(s) == 6 and s.isdigit():
+        if s.startswith(("5", "6", "9")):
+            return "sh" + s
+        if s.startswith(("0", "2", "3")):
+            return "sz" + s
+        if s.startswith(("4", "8")):
+            return "bj" + s
+    return s
+
+
+def _to_yyyymmdd_int(s: str) -> int:
+    """'2024-01-02' → 20240102"""
+    s = s.replace("-", "").replace("/", "")
+    return int(s)

@@ -92,3 +92,58 @@ def test_list_symbols_by_market(fake_data_dir):
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
     sh = tdx.list_symbols(market="sh")
     assert sh == ["sh600000"]
+
+
+# ─── Task 4: kline (pyarrow predicate pushdown) ────────────────────────────────
+
+def test_kline_single_symbol(fake_data_dir):
+    """建 sh.parquet 含 sh600000 三行 → 读必须返回"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "symbol": ["sh600000", "sh600000", "sh600000"],
+        "date": [20240102, 20240103, 20240104],
+        "open": [10.0, 10.5, 11.0],
+        "high": [10.5, 11.0, 11.5],
+        "low": [9.8, 10.3, 10.8],
+        "close": [10.3, 10.8, 11.2],
+        "volume": [1000, 2000, 3000],
+        "amount": [10250.0, 21600.0, 33780.0],
+    })
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.kline("sh600000")
+    assert len(df) == 3
+    assert list(df.columns) == ["date", "open", "high", "low", "close", "volume", "amount"]
+
+
+def test_kline_with_date_range(fake_data_dir):
+    """start='2024-01-02' end='2024-01-03' → 2 行"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "symbol": ["sh600000"] * 5,
+        "date": [20240101, 20240102, 20240103, 20240104, 20240105],
+        "open": [10.0, 10.5, 11.0, 11.5, 12.0],
+        "high": [10.5, 11.0, 11.5, 12.0, 12.5],
+        "low": [9.8, 10.3, 10.8, 11.3, 11.8],
+        "close": [10.3, 10.8, 11.2, 11.7, 12.2],
+        "volume": [1000, 2000, 3000, 4000, 5000],
+        "amount": [10250.0, 21600.0, 33780.0, 47160.0, 61600.0],
+    })
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.kline("sh600000", start="2024-01-02", end="2024-01-03")
+    assert len(df) == 2
+
+
+def test_kline_unknown_symbol_returns_empty(fake_data_dir):
+    """sh999999 不存在 → 不 raise, 返回空 DataFrame"""
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.kline("sh999999")
+    assert df.empty
