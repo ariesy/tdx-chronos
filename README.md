@@ -1,110 +1,152 @@
 # tdx-chronos
 
-> **A 股离线数据仓库** · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地调用接口
+> **v1.4.0 (Sprint 10 · Query Facade)** · A 股离线数据仓库 · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地统一查询接口
 
-[![Status](https://img.shields.io/badge/status-v1.1.0-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-229%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
+[![Status](https://img.shields.io/badge/status-v1.4.0-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-229%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
 
-## v1.1 是什么
-
-`tdx-chronos` 每天 17:30 (Asia/Shanghai) 从通达信官方服务器下 5 个 zip（hsjday/tdxfin/tdxgp + 2 指数），
-周日 02:00 下 tdxfin 周更，解 .day/.dat 为 Parquet，存到本地供下游分析使用。
-
-**核心数据流**：
-```
-通达信官方 zip → curl → 本地 ZIP → struct 解析 → Parquet → SQLite 元数据
-                       ↓
-                  daily_sync.sh (cron Mon-Fri 17:30)
-                  weekly_sync.sh (cron Sun 02:00)
-                  weekly_doctor.sh (cron Sun 03:00 · 健康检查 + 飞书告警)
-```
-
-## 数据规模 (v1.1)
-
-| 类别 | 数量 | 备注 |
-|---|---:|---|
-| 股票 (symbols) | **12,256** | A 股 + 港股 + 美股 |
-| 股本 records | **120,340,424** | 7,571 .dat 文件 · 587.7 MB Parquet |
-| 财务 quarters | 121 | 5 个 zip 周更 |
-| 指数 records | **28,004** | 5 个指数日线 |
-| 股本 type 字段语义 | **33 types 映射** | 5 categories · 100% 覆盖 |
-
-## 5 大模块
-
-1. **kline** - 日线 (.day) → Parquet (12,256 stocks)
-2. **financial** - 财务 (.dat) → Parquet (121 quarters)
-3. **gp** - 股本 (.dat) → Parquet (1.2 亿 records · 5 categories 语义映射)
-4. **index** - 指数 (.day) → Parquet (28,004 records)
-5. **cron + doctor + alertor** - 健康检查 + 飞书告警
+**设计哲学**：Facade Pattern — 底层解析细节对调用方透明；Readonly-first — 所有写操作通过 `readonly=False` 显式授权；Real-data-tested — 每一行代码在真实数据上验证；No-network — 纯本地数据查询；TDD coverage — 229 tests passing。
 
 ## 快速开始
 
-```bash
-# 1. 装 venv
-python3 -m venv .venv
-.venv/bin/pip install vendoring pytest pandas pyarrow requests
-
-# 2. 验证 vendoring（committee Confidence Medium → High 必跑）
-python3 -m vendoring sync vendor/mootdx/
-
-# 3. 跑测试 (229 PASSED)
-.venv/bin/pytest tests/
-
-# 4. 启动下载（开发期 · 实际由 cron 触发）
-bash cron/daily_sync.sh
-
-# 5. 启动股本分类探索
-PYTHONPATH=src:vendor/_vendor .venv/bin/python -c "
-from tdx_chronos.fin.tdxgp_types import CATEGORY_BUCKETS, get_type_name
-print(f'capital_share: {len(CATEGORY_BUCKETS[\"capital_share\"])} types')
-print(f'type 21 name: {get_type_name(21)}')
-"
-```
-
-## v1.1 核心 API
-
 ```python
 from pathlib import Path
-from tdx_chronos.fin.tdxgp_record import TdxGpRecordReader
-from tdx_chronos.fin.tdxgp_types import CATEGORY_BUCKETS, get_type_name
+from tdx_chronos import TdxChronos
 
-# 按 category 获取股本 records
-df = TdxGpRecordReader.to_categorized(
-    Path("data/gp/records.parquet"),
-    "capital_share",           # 5 categories
-    code="600519",             # Optional 单股过滤
-)
+tdx = TdxChronos(data_dir=Path("/data/tdx"))  # 5 子路径: gp/, index/, parquet_compact/, fin/parsed/, meta/meta.db
+
+info = tdx.symbol_info("sh600000")
+klines = tdx.kline("sh600000", start="2024-01-01", end="2024-12-31")
+quarters = tdx.list_quarters()  # ['20201231', '20210331', ...]
+df = tdx.finance("000858", report_date="2025-12-31")
+holders = tdx.shareholders("sh600000")
+index_df = tdx.index_klines("sh000001", start="2024-01-01")
+report = tdx.doctor()  # 健康检查
+
+tdx.close()
+```
+
+## 数据布局
+
+```
+data_dir/
+├── gp/records.parquet              # 股东信息 (7,571 .dat · 120M+ records)
+├── index/indices.parquet           # 指数 K 线 (28,004 records · 5 指数)
+├── parquet_compact/{market}/{symbol}.parquet   # 个股 K 线 (per-symbol 分片)
+├── fin/parsed/gpcw{YYYYMMDD}.parquet           # 财报 (按季度, code 在 index 列)
+└── meta/meta.db                    # SQLite · symbol_metadata 表
+```
+
+## API Reference
+
+### `TdxChronos(data_dir, *, readonly=True)`
+
+数据仓库入口。`data_dir` 下需包含上述 5 个数据子路径。`readonly=True` 时禁止任何写操作。
+
+```python
+tdx = TdxChronos(Path("/data/tdx"))
+```
+
+---
+
+### `symbol_info(symbol) → dict`
+
+返回个股基本信息（名称、市场、上市日期等），来自 SQLite `symbol_metadata` 表。
+
+```python
+info = tdx.symbol_info("sh600000")
+# {'code': 'sh600000', 'name': '浦发银行', 'market': 'sh', 'list_date': '19991110', ...}
+```
+
+---
+
+### `list_symbols(market=None) → list[str]`
+
+列出所有股票代码。可选 `market` 过滤（如 `"sh"` / `"sz"`）。
+
+```python
+codes = tdx.list_symbols()          # 所有
+codes = tdx.list_symbols("sz")     # 深市
+```
+
+---
+
+### `kline(symbol, *, start=None, end=None) → DataFrame`
+
+读取个股日线 K 线（来自 `parquet_compact/{market}/{symbol}.parquet`）。
+
+```python
+df = tdx.kline("sh600000", start="2024-01-01", end="2024-12-31")
+# columns: date, open, high, low, close, volume, amount, ...
+```
+
+---
+
+### `index_klines(code, *, start=None, end=None) → DataFrame`
+
+读取指数日线 K 线（来自 `index/indices.parquet`，按 `code` 列过滤）。
+
+```python
+df = tdx.index_klines("sh000001", start="2024-01-01")
+# columns: date, open, high, low, close, volume, amount, code, name, ...
+```
+
+---
+
+### `finance(symbol, *, report_date=None, ratio_only=False) → DataFrame`
+
+读取个股财报数据（来自 `fin/parsed/gpcw{YYYYMMDD}.parquet`）。
+
+```python
+df = tdx.finance("000858", report_date="2025-12-31")
+# columns: code, report_date, revenue, net_profit, assets, liabilities, ...
+df = tdx.finance("000858", report_date="2025-12-31", ratio_only=True)
+# 仅返回财务比率（roe, eps, pe, pb 等）
+```
+
+---
+
+### `shareholders(symbol) → DataFrame`
+
+读取个股股东数据（来自 `gp/records.parquet`，按 `code` 列过滤）。
+
+```python
+df = tdx.shareholders("sh600000")
 # columns: code, type, date, value_1, value_2, market, type_name
 ```
 
+---
+
+### `list_quarters() → list[str]`
+
+返回所有可用财报季度列表（来自 `fin/parsed/`，从文件名提取）。
+
 ```python
-# 健康检查 (Sprint 5)
-from tdx_chronos.doctor import HealthDoctor
-status = HealthDoctor.run_all()
-# 8 项检查 · 3 级别 (healthy/degraded/unhealthy)
+quarters = tdx.list_quarters()
+# ['20201231', '20210331', '20210630', '20210930', ...]
 ```
 
-## v1.1 不做什么
+---
 
-- ❌ 多源验证 (sina/同花顺/tushare) — v2.0 预留
-- ❌ 在线实时推送 — v2.0 预留
-- ❌ HTTP 兜底 — v2.0 预留
-- ❌ 修复 mootdx 4 个 bug — 主路径不触发，记入 vendor/UPGRADE_NOTES.md
-- ❌ gpcw 财务领域解析 — Sprint 8 预留
+### `doctor() → DoctorReport`
 
-## Sprint 7 核心成果
+运行健康检查，验证数据完整性，返回结构化报告。
 
-- **33 types 字段语义映射** (Sprint 6: 14 → Sprint 7: 33 · +19)
-- **100% records 覆盖** (Sprint 6: 69% → Sprint 7: 100%)
-- **zstd 压缩实验** (snappy → zstd3 节省 26.1%)
-- **摸排脚本** (511 sample records · 5 大蓝筹 + 28 types)
-- **测试 229 PASSED** (Sprint 1-7 累计)
+```python
+report = tdx.doctor()
+# DoctorReport(fields: total_files, missing_dirs, empty_files, corrupt_parquet, stats)
+```
 
-## 文档
+---
 
-- **需求文档**: `requirements.md` · 唯一权威
-- **Sprint 计划**: `docs/plans/`
-- **Sprint 报告**: `logs/sprint{N}-report.md`
-- **贡献指南**: `docs/CONTRIBUTING.md`
+### `close()`
+
+关闭数据库连接，释放资源。
+
+```python
+tdx.close()
+```
+
+---
 
 ## 项目状态
 
@@ -116,10 +158,18 @@ status = HealthDoctor.run_all()
 | 3-4 | 解析 + Parquet 输出 + 元数据 | 2026-07-04 | ✅ |
 | 5 | cron 接入 + doctor + 飞书告警 | 2026-07-05 | ✅ |
 | 6 | 股本 type 字段语义 (14 types) + gpcw bug 修复 | 2026-07-05 | ✅ |
-| **7** | **未分类 28 types 语义 (33 types) + zstd 实验** | **2026-07-05** | **✅** |
-| 8 | gpcw 财务领域 (预留) | TBD | ⏳ |
+| 7 | 未分类 28 types 语义 (33 types) + zstd 实验 | 2026-07-05 | ✅ |
+| 8 | gpcw 财务领域解析 (预留) | TBD | ⏳ |
+| 10 | **Query Facade v1.4.0 · 9 public methods** | **2026-07-07** | **✅** |
 
-v1.1.0 · 38 commits · 229 PASSED · 7 Sprint · 3 验证里程碑
+v1.4.0 · 229 PASSED · 10 Sprint
+
+## 文档
+
+- **需求文档**: `requirements.md` · 唯一权威
+- **Sprint 计划**: `docs/plans/`
+- **Sprint 报告**: `logs/sprint{N}-report.md`
+- **贡献指南**: `docs/CONTRIBUTING.md`
 
 ## License
 
@@ -127,4 +177,4 @@ MIT
 
 ---
 
-Co-Authored-By: claw-cortex 🦞 <ariesy.bleiben@gmail.com>
+Co-Authored-By: claw-cortex 🦞 <ariesy.bleiren@gmail.com>
