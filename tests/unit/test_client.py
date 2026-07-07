@@ -417,3 +417,68 @@ def test_list_quarters_empty_returns_empty_list(fake_data_dir):
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
     quarters = tdx.list_quarters()
     assert quarters == []
+
+
+# ─── Sprint 10 T5-fix: missing-file + ratio_only tests ───────────────────────
+
+def _make_data_dir_without_required_parquet_files(tmp_path):
+    """Creates data dir structure WITHOUT gp/records.parquet and index/indices.parquet.
+    Used to test that shareholders/index_klines handle missing files gracefully."""
+    (tmp_path / "parquet_compact").mkdir()
+    (tmp_path / "fin" / "parsed").mkdir(parents=True)
+    (tmp_path / "gp").mkdir()          # NOTE: no records.parquet created
+    (tmp_path / "index").mkdir()        # NOTE: no indices.parquet created
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta" / "meta.db").touch()
+    return tmp_path
+
+
+def test_shareholders_missing_file_returns_empty(tmp_path):
+    """gp/records.parquet 不存在 → empty DataFrame, 不 raise"""
+    data_dir = _make_data_dir_without_required_parquet_files(tmp_path)
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=data_dir, readonly=False)
+    df = tdx.shareholders("sh600000")
+    assert df.empty
+
+
+def test_index_klines_missing_file_returns_empty(tmp_path):
+    """index/indices.parquet 不存在 → empty DataFrame, 不 raise"""
+    data_dir = _make_data_dir_without_required_parquet_files(tmp_path)
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=data_dir, readonly=False)
+    df = tdx.index_klines("sh000001")
+    assert df.empty
+
+
+def test_finance_ratio_only_filter(fake_data_dir):
+    """ratio_only=True 保留 ratio/率 columns, 剔除其他"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    # NOTE: code column stores bare 6-digit, not prefixed (matching finance() logic)
+    table = pa.table({
+        "code": ["600000"],
+        "report_date": [20251231],
+        "资产总计": [1000.0],          # non-ratio
+        "负债合计": [400.0],           # non-ratio
+        "净利润": [50.0],              # non-ratio
+        "净资产收益率": [10.5],         # ratio (率)
+        "资产负债率": [40.0],          # ratio (率)
+        "current_ratio": [1.5],        # ratio (English)
+        "pe_ratio": [12.0],            # ratio (English)
+    })
+    pq.write_table(table, str(fake_data_dir / "fin" / "parsed" / "gpcw20251231.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.finance("sh600000", report_date="2025-12-31", ratio_only=True)
+
+    assert "code" in df.columns
+    assert "report_date" in df.columns
+    assert "净资产收益率" in df.columns    # kept (率)
+    assert "资产负债率" in df.columns      # kept (率)
+    assert "current_ratio" in df.columns   # kept (ratio)
+    assert "pe_ratio" in df.columns       # kept (ratio)
+    assert "资产总计" not in df.columns    # filtered out
+    assert "负债合计" not in df.columns    # filtered out
+    assert "净利润" not in df.columns      # filtered out

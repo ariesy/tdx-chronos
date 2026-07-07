@@ -33,8 +33,6 @@ class TdxChronos:
         "meta",
     ]
     FILES_REQUIRED = [
-        "gp/records.parquet",
-        "index/indices.parquet",
         "meta/meta.db",
     ]
 
@@ -248,10 +246,14 @@ class TdxChronos:
             symbol: 'sh600000'
 
         Returns:
-            DataFrame (可能 empty) · 不 raise
+            DataFrame (可能 empty) · 不 raise · 找不到返回 empty DataFrame
         """
         norm = _normalize_symbol(symbol)
-        table = pq.read_table(str(self.gp_records), filters=[("symbol", "=", norm)])
+        try:
+            table = pq.read_table(str(self.gp_records), filters=[("symbol", "=", norm)])
+        except (pa.ArrowInvalid, OSError) as e:
+            logging.warning("shareholders read failed for %s: %s", self.gp_records, e)
+            return pd.DataFrame()
         return table.to_pandas()
 
     def index_klines(
@@ -276,20 +278,29 @@ class TdxChronos:
             filters.append(("date", ">=", _to_yyyymmdd_int(start)))
         if end:
             filters.append(("date", "<=", _to_yyyymmdd_int(end)))
-        table = pq.read_table(str(self._index_klines_path), filters=filters)
+        try:
+            table = pq.read_table(str(self._index_klines_path), filters=filters)
+        except (pa.ArrowInvalid, OSError) as e:
+            logging.warning("index_klines read failed for %s: %s", self._index_klines_path, e)
+            return pd.DataFrame()
         df = table.to_pandas()
         if not df.empty:
             df = df.sort_values("date").reset_index(drop=True)
         return df
 
     def list_quarters(self) -> List[str]:
-        """list 已 parsed 季度 · ['2025-12-31', '2025-09-30', ...]"""
+        """list 已 parsed 季度 · 'YYYY-MM-DD' strings
+
+        Returns:
+            List[str] · sorted by date DESC (newest first: '2025-12-31', '2025-09-30', ...)
+            Empty list if no fin/parsed/gpcw*.parquet files
+        """
         files = sorted(self.fin_parsed.glob("gpcw*.parquet"))
         return [
             _int_to_yyyymmdd_dash(int(f.stem.replace("gpcw", ""))) for f in files
         ]
 
-    def doctor(self):
+    def doctor(self) -> DoctorReport:
         """复用现有 Doctor().run()"""
         from tdx_chronos.doctor import Doctor  # lazy to avoid circular import
         return Doctor(
