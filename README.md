@@ -54,7 +54,8 @@ tdx = TdxChronos(Path("/data/tdx"))
 
 ```python
 info = tdx.symbol_info("sh600000")
-# {'code': 'sh600000', 'name': '浦发银行', 'market': 'sh', 'list_date': '19991110', ...}
+# {'symbol': 'sh600000', 'market': 'sh', 'first_listing_date': 19991110,
+#  'last_parsed_at': '...', 'record_count': 6340, ...}
 ```
 
 ---
@@ -70,24 +71,26 @@ codes = tdx.list_symbols("sz")     # 深市
 
 ---
 
-### `kline(symbol, *, start=None, end=None) → DataFrame`
+### `kline(symbol, start=None, end=None, *, columns=None) → DataFrame`
 
 读取个股日线 K 线（来自 `parquet_compact/{market}/{symbol}.parquet`）。
 
 ```python
 df = tdx.kline("sh600000", start="2024-01-01", end="2024-12-31")
 # columns: date, open, high, low, close, volume, amount, ...
+df = tdx.kline("sh600000", start="2024-01-01", end="2024-12-31", columns=["date", "open", "high", "low", "close"])
+# 只投影需要的列 (predicate pushdown + column projection)
 ```
 
 ---
 
-### `index_klines(code, *, start=None, end=None) → DataFrame`
+### `index_klines(index_code, start=None, end=None) → DataFrame`
 
-读取指数日线 K 线（来自 `index/indices.parquet`，按 `code` 列过滤）。
+读取指数日线 K 线（来自 `index/indices.parquet`，按 `symbol` 列过滤）。
 
 ```python
-df = tdx.index_klines("sh000001", start="2024-01-01")
-# columns: date, open, high, low, close, volume, amount, code, name, ...
+df = tdx.index_klines("sh000001", start="2024-01-01", end="2024-12-31")
+# columns: date, open, high, low, close, volume, amount, symbol, market, ...
 ```
 
 ---

@@ -178,7 +178,7 @@ class TdxChronos:
         try:
             table = pq.read_table(str(kline_path), filters=filters, columns=columns)
         except (pa.ArrowInvalid, OSError) as e:
-            logging.warning("kline read failed for %s: %s", market_file, e)
+            logging.warning("kline read failed for %s: %s", kline_path, e)
             return pd.DataFrame()
 
         df = table.to_pandas()

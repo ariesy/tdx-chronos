@@ -136,9 +136,10 @@ def test_list_symbols_by_market(populated_data_dir):
 # ─── Task 4: kline (pyarrow predicate pushdown) ────────────────────────────────
 
 def test_kline_single_symbol(fake_data_dir):
-    """建 sh.parquet 含 sh600000 三行 → 读必须返回"""
+    """建 sh/sh600000.parquet 含 sh600000 三行 → 读必须返回"""
     import pyarrow as pa
     import pyarrow.parquet as pq
+    (fake_data_dir / "parquet_compact" / "sh").mkdir(parents=True)
     table = pa.table({
         "symbol": ["sh600000", "sh600000", "sh600000"],
         "date": [20240102, 20240103, 20240104],
@@ -148,20 +149,22 @@ def test_kline_single_symbol(fake_data_dir):
         "close": [10.3, 10.8, 11.2],
         "volume": [1000, 2000, 3000],
         "amount": [10250.0, 21600.0, 33780.0],
+        "market": ["sh"] * 3,
     })
-    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh" / "sh600000.parquet"))
 
     from tdx_chronos.client import TdxChronos
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
     df = tdx.kline("sh600000")
     assert len(df) == 3
-    assert list(df.columns) == ["date", "open", "high", "low", "close", "volume", "amount"]
+    assert set(df.columns) == {"date", "open", "high", "low", "close", "volume", "amount", "market"}
 
 
 def test_kline_with_date_range(fake_data_dir):
     """start='2024-01-02' end='2024-01-03' → 2 行"""
     import pyarrow as pa
     import pyarrow.parquet as pq
+    (fake_data_dir / "parquet_compact" / "sh").mkdir(parents=True)
     table = pa.table({
         "symbol": ["sh600000"] * 5,
         "date": [20240101, 20240102, 20240103, 20240104, 20240105],
@@ -171,8 +174,9 @@ def test_kline_with_date_range(fake_data_dir):
         "close": [10.3, 10.8, 11.2, 11.7, 12.2],
         "volume": [1000, 2000, 3000, 4000, 5000],
         "amount": [10250.0, 21600.0, 33780.0, 47160.0, 61600.0],
+        "market": ["sh"] * 5,
     })
-    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh" / "sh600000.parquet"))
 
     from tdx_chronos.client import TdxChronos
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
@@ -192,7 +196,8 @@ def test_kline_unknown_symbol_returns_empty(fake_data_dir):
 def test_kline_corrupt_parquet_returns_empty_with_warning(caplog, fake_data_dir):
     """corrupted parquet → empty DataFrame + warning logged (not silent)"""
     import logging
-    market_file = fake_data_dir / "parquet_compact" / "sh.parquet"
+    (fake_data_dir / "parquet_compact" / "sh").mkdir(parents=True)
+    market_file = fake_data_dir / "parquet_compact" / "sh" / "sh600000.parquet"
     market_file.write_text("this is not a valid parquet file")
 
     from tdx_chronos.client import TdxChronos
@@ -214,6 +219,7 @@ def test_kline_columns_projection(fake_data_dir):
     """columns 参数只返回指定列"""
     import pyarrow as pa
     import pyarrow.parquet as pq
+    (fake_data_dir / "parquet_compact" / "sh").mkdir(parents=True)
     table = pa.table({
         "symbol": ["sh600000", "sh600000"],
         "date": [20240102, 20240103],
@@ -223,8 +229,9 @@ def test_kline_columns_projection(fake_data_dir):
         "close": [10.3, 10.8],
         "volume": [1000, 2000],
         "amount": [10250.0, 21600.0],
+        "market": ["sh", "sh"],
     })
-    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh" / "sh600000.parquet"))
 
     from tdx_chronos.client import TdxChronos
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
@@ -324,11 +331,12 @@ def test_shareholders_single_symbol(fake_data_dir):
     import pyarrow as pa
     import pyarrow.parquet as pq
     table = pa.table({
-        "symbol": ["sh600000"],
-        "name": ["ABC Corp"],
-        "share": [1000.0],
-        "share_type": ["A股"],
-        "holder_type": ["流通股东"],
+        "code": ["600000"],
+        "type": [1],
+        "date": [20250630],
+        "value_1": [1000],
+        "value_2": [2000],
+        "market": ["sh"],
     })
     pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
 
@@ -357,13 +365,17 @@ def test_index_klines_sh000001(fake_data_dir):
     import pyarrow as pa
     import pyarrow.parquet as pq
     table = pa.table({
-        "index_code": ["sh000001", "sh000001", "sh000001"],
+        "symbol": ["sh000001", "sh000001", "sh000001"],
         "date": [20240101, 20240102, 20240103],
         "open": [3000.0, 3010.0, 3020.0],
         "high": [3010.0, 3020.0, 3030.0],
         "low": [2990.0, 3000.0, 3010.0],
         "close": [3005.0, 3015.0, 3025.0],
         "volume": [100, 200, 300],
+        "market": ["sh"] * 3,
+        "amount": [1000.0, 2000.0, 3000.0],
+        "vol": [10, 20, 30],
+        "reserved": [0, 0, 0],
     })
     pq.write_table(table, str(fake_data_dir / "index" / "indices.parquet"))
 
@@ -379,13 +391,17 @@ def test_index_klines_with_date_range(fake_data_dir):
     import pyarrow as pa
     import pyarrow.parquet as pq
     table = pa.table({
-        "index_code": ["sh000001"] * 5,
+        "symbol": ["sh000001"] * 5,
         "date": [20240101, 20240102, 20240103, 20240104, 20240105],
         "open": [3000.0, 3010.0, 3020.0, 3030.0, 3040.0],
         "high": [3010.0, 3020.0, 3030.0, 3040.0, 3050.0],
         "low": [2990.0, 3000.0, 3010.0, 3020.0, 3030.0],
         "close": [3005.0, 3015.0, 3025.0, 3035.0, 3045.0],
         "volume": [100, 200, 300, 400, 500],
+        "market": ["sh"] * 5,
+        "amount": [1000.0, 2000.0, 3000.0, 4000.0, 5000.0],
+        "vol": [10, 20, 30, 40, 50],
+        "reserved": [0] * 5,
     })
     pq.write_table(table, str(fake_data_dir / "index" / "indices.parquet"))
 
