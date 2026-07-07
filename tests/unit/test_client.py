@@ -177,6 +177,7 @@ def test_kline_with_date_range(fake_data_dir):
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
     df = tdx.kline("sh600000", start="2024-01-02", end="2024-01-03")
     assert len(df) == 2
+    assert list(df["date"]) == [20240102, 20240103]
 
 
 def test_kline_unknown_symbol_returns_empty(fake_data_dir):
@@ -185,3 +186,47 @@ def test_kline_unknown_symbol_returns_empty(fake_data_dir):
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
     df = tdx.kline("sh999999")
     assert df.empty
+
+
+def test_kline_corrupt_parquet_returns_empty_with_warning(caplog, fake_data_dir):
+    """corrupted parquet → empty DataFrame + warning logged (not silent)"""
+    import logging
+    market_file = fake_data_dir / "parquet_compact" / "sh.parquet"
+    market_file.write_text("this is not a valid parquet file")
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    with caplog.at_level(logging.WARNING):
+        df = tdx.kline("sh600000")
+    assert df.empty
+    assert any("kline read failed" in r.message for r in caplog.records)
+
+
+def test_kline_invalid_date_range_raises(fake_data_dir):
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    with pytest.raises(ValueError, match="must be <="):
+        tdx.kline("sh600000", start="2024-01-05", end="2024-01-03")
+
+
+def test_kline_columns_projection(fake_data_dir):
+    """columns 参数只返回指定列"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "symbol": ["sh600000", "sh600000"],
+        "date": [20240102, 20240103],
+        "open": [10.0, 10.5],
+        "high": [10.5, 11.0],
+        "low": [9.8, 10.3],
+        "close": [10.3, 10.8],
+        "volume": [1000, 2000],
+        "amount": [10250.0, 21600.0],
+    })
+    pq.write_table(table, str(fake_data_dir / "parquet_compact" / "sh.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.kline("sh600000", columns=["date", "close"])
+    assert list(df.columns) == ["date", "close"]
+    assert len(df) == 2

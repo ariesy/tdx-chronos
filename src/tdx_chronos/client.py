@@ -4,11 +4,15 @@ Phase 1 骨架: 仅暴露 TdxChronos class (方法 stub 后续 task 加)
 """
 from __future__ import annotations
 
+import logging
 import os
 import stat
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 class TdxChronos:
@@ -157,9 +161,10 @@ class TdxChronos:
             DataFrame [date, open, high, low, close, volume, amount]
             找不到返回 empty DataFrame (不 raise)
         """
-        import pyarrow.parquet as pq
-
         norm = _normalize_symbol(symbol)
+        if start and end and _to_yyyymmdd_int(start) > _to_yyyymmdd_int(end):
+            raise ValueError(f"start ({start}) must be <= end ({end})")
+
         market = norm[:2]
         market_file = self.parquet_compact / f"{market}.parquet"
 
@@ -174,7 +179,8 @@ class TdxChronos:
 
         try:
             table = pq.read_table(market_file, filters=filters, columns=columns)
-        except Exception:
+        except (pa.ArrowInvalid, OSError) as e:
+            logging.warning("kline read failed for %s: %s", market_file, e)
             return pd.DataFrame()
 
         df = table.to_pandas()
