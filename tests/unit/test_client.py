@@ -22,6 +22,16 @@ def fake_data_dir(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def populated_data_dir(fake_data_dir):
+    """fake_data_dir + MetaDB schema initialized, ready for record_symbol() calls"""
+    from tdx_chronos.meta.db import MetaDB
+    db = MetaDB(str(fake_data_dir / "meta" / "meta.db"))
+    db.init_schema()
+    db.close()
+    return fake_data_dir
+
+
 def test_init_with_valid_data_dir(fake_data_dir):
     from tdx_chronos.client import TdxChronos
     tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
@@ -44,19 +54,49 @@ def test_init_with_incomplete_data_dir_raises(tmp_path):
 
 # ─── Task 3: symbol_info + list_symbols ────────────────────────────────────────
 
-def test_symbol_info_returns_dict(fake_data_dir):
+def test_symbol_info_returns_dict(populated_data_dir):
     """先 init 一个临时 meta.db + 一行 symbol_metadata"""
     from tdx_chronos.meta.db import MetaDB
-    db = MetaDB(str(fake_data_dir / "meta" / "meta.db"))
-    db.init_schema()
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
     db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip", "/tmp/a.parquet")
     db.close()
 
     from tdx_chronos.client import TdxChronos
-    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
     info = tdx.symbol_info("sh600000")
     assert info["symbol"] == "sh600000"
     assert info["market"] == "sh"
+
+
+def test_close_releases_db_even_if_chmod_fails(monkeypatch, populated_data_dir):
+    """Critical #1: chmod raise PermissionError → db.close() must STILL be called"""
+    import tdx_chronos.client as client_mod
+
+    # Pre-populate so lazy db is opened
+    from tdx_chronos.meta.db import MetaDB
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip", "/tmp/a.parquet")
+    db.close()
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=True)
+
+    # Force lazy db open
+    info = tdx.symbol_info("sh600000")
+    assert info["symbol"] == "sh600000"
+    assert tdx._db is not None  # confirm db is open
+
+    # Monkeypatch chmod to fail
+    def fake_chmod(path, mode):
+        raise PermissionError(f"simulated chmod failure on {path}")
+    monkeypatch.setattr(client_mod.os, "chmod", fake_chmod)
+
+    # Close should raise RuntimeError (chmod failed)
+    with pytest.raises(RuntimeError, match="close\\(\\) failed to restore"):
+        tdx.close()
+
+    # But db should still have been released
+    assert tdx._db is None, "db connection was leaked — Critical #1 not fixed"
 
 
 def test_symbol_info_unknown_returns_empty(fake_data_dir):
@@ -65,31 +105,29 @@ def test_symbol_info_unknown_returns_empty(fake_data_dir):
     assert tdx.symbol_info("sh999999") == {}
 
 
-def test_list_symbols_all(fake_data_dir):
+def test_list_symbols_all(populated_data_dir):
     from tdx_chronos.meta.db import MetaDB
-    db = MetaDB(str(fake_data_dir / "meta" / "meta.db"))
-    db.init_schema()
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
     db.record_symbol("sh600000", "sh", 19991110, 1, "x", "y")
     db.record_symbol("sz000001", "sz", 19910403, 1, "x", "y")
     db.record_symbol("bj838000", "bj", 20200101, 1, "x", "y")
     db.close()
     from tdx_chronos.client import TdxChronos
-    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
     syms = tdx.list_symbols()
     assert set(syms) == {"sh600000", "sz000001", "bj838000"}
 
 
-def test_list_symbols_by_market(fake_data_dir):
+def test_list_symbols_by_market(populated_data_dir):
     """取仅 sh"""
     from tdx_chronos.meta.db import MetaDB
-    db = MetaDB(str(fake_data_dir / "meta" / "meta.db"))
-    db.init_schema()
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
     db.record_symbol("sh600000", "sh", 19991110, 1, "x", "y")
     db.record_symbol("sz000001", "sz", 19910403, 1, "x", "y")
     db.record_symbol("bj838000", "bj", 20200101, 1, "x", "y")
     db.close()
     from tdx_chronos.client import TdxChronos
-    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
     sh = tdx.list_symbols(market="sh")
     assert sh == ["sh600000"]
 

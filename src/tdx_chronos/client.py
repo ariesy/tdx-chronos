@@ -71,6 +71,11 @@ class TdxChronos:
     def close(self):
         if not self.readonly:
             return
+        # 1. Release db connection FIRST (before any chmod that may fail)
+        db, self._db = self._db, None
+        if db is not None:
+            db.close()
+        # 2. Then restore chmod (may fail with RuntimeError; that's OK — caller will know)
         for p in [self.gp_records, self.index_klines, self.meta_db_path]:
             if p.is_file():
                 try:
@@ -80,13 +85,10 @@ class TdxChronos:
                         f"close() failed to restore write permission on {p}: {e}. "
                         f"cron may be unable to write until manually chmod'd."
                     ) from e
-        if self._db is not None:
-            self._db.close()
-            self._db = None
 
     # ─── Task 3: symbol_info + list_symbols ────────────────────────────────────
 
-    def _ensure_db(self):
+    def _ensure_db(self) -> Any:
         """Lazy init MetaDB connection"""
         if self._db is None:
             from tdx_chronos.meta.db import MetaDB
@@ -95,7 +97,7 @@ class TdxChronos:
         return self._db
 
     def symbol_info(self, symbol: str) -> Dict[str, Any]:
-        """symbol metadata · 12,256 行中一行
+        """symbol metadata lookup · returns dict or {} when not found
 
         Args:
             symbol: 'sh600000' / 'sz000001' / 'bj838000'
@@ -113,10 +115,13 @@ class TdxChronos:
         return dict(row) if row else {}
 
     def list_symbols(self, market: Optional[str] = None) -> List[str]:
-        """list 全部 symbols (or 仅 sh/sz/bj)
+        """list symbols in meta.db
 
         Args:
-            market: None=all · 'sh'='sz'='bj'
+            market: 'sh'/'sz'/'bj' filter · None=全部 3 个市场
+
+        Returns:
+            List[str] · sorted by symbol ASC
         """
         db = self._ensure_db()
         conn = db._connect()
