@@ -1,4 +1,5 @@
 """Phase 1 TDD · TdxChronos facade scaffolding"""
+import pandas as pd
 import pytest
 from pathlib import Path
 
@@ -230,3 +231,189 @@ def test_kline_columns_projection(fake_data_dir):
     df = tdx.kline("sh600000", columns=["date", "close"])
     assert list(df.columns) == ["date", "close"]
     assert len(df) == 2
+
+
+# ─── Task 5: finance + shareholders + index_klines + list_quarters + doctor ─────
+
+def test_finance_single_quarter(fake_data_dir):
+    """建 1 季度 parquet 含 sh600000 一行"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "code": ["600000"],
+        "report_date": [20251231],
+        "资产总计": [1000.0],
+        "负债合计": [400.0],
+        "所有者权益合计": [600.0],
+        "净利润": [50.0],
+        "基本每股收益": [0.5],
+        "稀释每股收益": [0.4],
+        "营业总收入": [200.0],
+        "营业收入": [180.0],
+        "营业成本": [120.0],
+        "利润总额": [70.0],
+        "经营活动产生的现金流量净额": [80.0],
+        "投资活动产生的现金流量净额": [-20.0],
+        "筹资活动产生的现金流量净额": [-10.0],
+        "现金及现金等价物净增加额": [50.0],
+        "资产收益率": [0.05],
+        "净资产收益率": [0.083],
+        "资产负债率": [0.4],
+    })
+    pq.write_table(table, str(fake_data_dir / "fin" / "parsed" / "gpcw20251231.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.finance("sh600000", report_date="2025-12-31")
+    assert len(df) == 1
+    assert "资产总计" in df.columns
+
+
+def test_finance_all_quarters(fake_data_dir):
+    """report_date=None → 返回全部 available quarters"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table_empty = pa.table({"code": [], "report_date": [], "资产总计": []})
+    table1 = pa.table({
+        "code": ["600000"], "report_date": [20251231],
+        "资产总计": [1000.0], "负债合计": [400.0], "所有者权益合计": [600.0],
+        "净利润": [50.0], "基本每股收益": [0.5], "稀释每股收益": [0.4],
+        "营业总收入": [200.0], "营业收入": [180.0], "营业成本": [120.0],
+        "利润总额": [70.0], "经营活动产生的现金流量净额": [80.0],
+        "投资活动产生的现金流量净额": [-20.0],
+        "筹资活动产生的现金流量净额": [-10.0],
+        "现金及现金等价物净增加额": [50.0],
+        "资产收益率": [0.05], "净资产收益率": [0.083], "资产负债率": [0.4],
+    })
+    table2 = pa.table({
+        "code": ["600000"], "report_date": [20250930],
+        "资产总计": [950.0], "负债合计": [380.0], "所有者权益合计": [570.0],
+        "净利润": [45.0], "基本每股收益": [0.45], "稀释每股收益": [0.36],
+        "营业总收入": [190.0], "营业收入": [170.0], "营业成本": [115.0],
+        "利润总额": [65.0], "经营活动产生的现金流量净额": [70.0],
+        "投资活动产生的现金流量净额": [-15.0],
+        "筹资活动产生的现金流量净额": [-8.0],
+        "现金及现金等价物净增加额": [47.0],
+        "资产收益率": [0.047], "净资产收益率": [0.079], "资产负债率": [0.40],
+    })
+    pq.write_table(table1, str(fake_data_dir / "fin" / "parsed" / "gpcw20251231.parquet"))
+    pq.write_table(table2, str(fake_data_dir / "fin" / "parsed" / "gpcw20250930.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.finance("sh600000")  # 默认: 全部 quarters
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 2  # 两个季度
+
+
+def test_finance_unknown_symbol_returns_empty(fake_data_dir):
+    """sh999999 不存在 → 返回空 DataFrame"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({"code": ["600000"], "report_date": [20251231], "资产总计": [1000.0]})
+    pq.write_table(table, str(fake_data_dir / "fin" / "parsed" / "gpcw20251231.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.finance("sh999999")
+    assert df.empty
+
+
+def test_shareholders_single_symbol(fake_data_dir):
+    """gp/records.parquet 含 sh600000 一行"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "symbol": ["sh600000"],
+        "name": ["ABC Corp"],
+        "share": [1000.0],
+        "share_type": ["A股"],
+        "holder_type": ["流通股东"],
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.shareholders("sh600000")
+    assert len(df) == 1
+    assert "symbol" in df.columns
+
+
+def test_shareholders_unknown_symbol_returns_empty(fake_data_dir):
+    """sh999999 不存在 → 返回空 DataFrame"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({"symbol": ["sh600000"], "name": ["ABC"], "share": [1000.0]})
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.shareholders("sh999999")
+    assert df.empty
+
+
+def test_index_klines_sh000001(fake_data_dir):
+    """index/indices.parquet 含 sh000001 三行"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "index_code": ["sh000001", "sh000001", "sh000001"],
+        "date": [20240101, 20240102, 20240103],
+        "open": [3000.0, 3010.0, 3020.0],
+        "high": [3010.0, 3020.0, 3030.0],
+        "low": [2990.0, 3000.0, 3010.0],
+        "close": [3005.0, 3015.0, 3025.0],
+        "volume": [100, 200, 300],
+    })
+    pq.write_table(table, str(fake_data_dir / "index" / "indices.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.index_klines("sh000001")
+    assert len(df) == 3
+    assert "close" in df.columns
+
+
+def test_index_klines_with_date_range(fake_data_dir):
+    """start + end 过滤"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "index_code": ["sh000001"] * 5,
+        "date": [20240101, 20240102, 20240103, 20240104, 20240105],
+        "open": [3000.0, 3010.0, 3020.0, 3030.0, 3040.0],
+        "high": [3010.0, 3020.0, 3030.0, 3040.0, 3050.0],
+        "low": [2990.0, 3000.0, 3010.0, 3020.0, 3030.0],
+        "close": [3005.0, 3015.0, 3025.0, 3035.0, 3045.0],
+        "volume": [100, 200, 300, 400, 500],
+    })
+    pq.write_table(table, str(fake_data_dir / "index" / "indices.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    df = tdx.index_klines("sh000001", start="2024-01-02", end="2024-01-04")
+    assert len(df) == 3
+    assert list(df["date"]) == [20240102, 20240103, 20240104]
+
+
+def test_list_quarters(fake_data_dir):
+    """fin/parsed 下 2 个 parquet → 2 个 quarter string"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({"code": [], "report_date": []})
+    pq.write_table(table, str(fake_data_dir / "fin" / "parsed" / "gpcw20251231.parquet"))
+    pq.write_table(table, str(fake_data_dir / "fin" / "parsed" / "gpcw20250930.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    quarters = tdx.list_quarters()
+    assert "2025-12-31" in quarters
+    assert "2025-09-30" in quarters
+
+
+def test_list_quarters_empty_returns_empty_list(fake_data_dir):
+    """fin/parsed 下无 parquet → 返回空 list"""
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    quarters = tdx.list_quarters()
+    assert quarters == []

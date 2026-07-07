@@ -57,7 +57,7 @@ class TdxChronos:
         self.parquet_compact = self.data_dir / "parquet_compact"
         self.fin_parsed = self.data_dir / "fin" / "parsed"
         self.gp_records = self.data_dir / "gp" / "records.parquet"
-        self.index_klines = self.data_dir / "index" / "indices.parquet"
+        self._index_klines_path = self.data_dir / "index" / "indices.parquet"
         self.meta_db_path = self.data_dir / "meta" / "meta.db"
         self.readonly = readonly
         self._db: Optional[Any] = None
@@ -65,7 +65,7 @@ class TdxChronos:
             self._lock_for_readonly()
 
     def _lock_for_readonly(self):
-        for p in [self.gp_records, self.index_klines, self.meta_db_path]:
+        for p in [self.gp_records, self._index_klines_path, self.meta_db_path]:
             if p.is_file():
                 try:
                     os.chmod(p, stat.S_IRUSR)
@@ -80,7 +80,7 @@ class TdxChronos:
         if db is not None:
             db.close()
         # 2. Then restore chmod (may fail with RuntimeError; that's OK — caller will know)
-        for p in [self.gp_records, self.index_klines, self.meta_db_path]:
+        for p in [self.gp_records, self._index_klines_path, self.meta_db_path]:
             if p.is_file():
                 try:
                     os.chmod(p, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
@@ -190,6 +190,118 @@ class TdxChronos:
                 df = df.drop(columns=["symbol"])
             df = df.sort_values("date").reset_index(drop=True)
         return df
+
+    # ─── Task 5: finance + shareholders + index_klines + list_quarters + doctor ─
+
+    def finance(
+        self,
+        symbol: str,
+        report_date: Optional[str] = None,
+        ratio_only: bool = False,
+    ) -> pd.DataFrame:
+        """单 symbol 财务 · 多 quarter 默认
+
+        Args:
+            symbol: 'sh600000' 或 '600000'
+            report_date: 单 quarter · None=全部 available
+            ratio_only: True=仅 ratio 类型 columns (简化版)
+
+        Returns:
+            DataFrame 每行 = 1 个 (symbol, quarter) · 找不到返回 empty DataFrame
+        """
+        norm = _normalize_symbol(symbol)
+        bare = norm[2:] if norm.startswith(("sh", "sz", "bj")) else norm
+
+        files = sorted(self.fin_parsed.glob("gpcw*.parquet"))
+        if not files:
+            return pd.DataFrame()
+
+        if report_date:
+            target_yyyymmdd = _to_yyyymmdd_int(report_date)
+            files = [
+                f for f in files
+                if f.stem.replace("gpcw", "") == str(target_yyyymmdd)
+            ]
+            if not files:
+                return pd.DataFrame()
+
+        rows = []
+        for f in files:
+            df = pq.read_table(str(f)).to_pandas()
+            match = df[df["code"] == bare]
+            if not match.empty:
+                rd = int(f.stem.replace("gpcw", ""))
+                match = match.assign(report_date=rd)
+                if ratio_only:
+                    ratio_cols = [
+                        c for c in match.columns
+                        if "ratio" in c.lower() or "率" in c
+                    ]
+                    match = match[["code", "report_date"] + ratio_cols]
+                rows.append(match)
+        return pd.concat(rows).reset_index(drop=True) if rows else pd.DataFrame()
+
+    def shareholders(self, symbol: str) -> pd.DataFrame:
+        """股本 · 按 symbol 过滤
+
+        Args:
+            symbol: 'sh600000'
+
+        Returns:
+            DataFrame (可能 empty) · 不 raise
+        """
+        norm = _normalize_symbol(symbol)
+        table = pq.read_table(str(self.gp_records), filters=[("symbol", "=", norm)])
+        return table.to_pandas()
+
+    def index_klines(
+        self,
+        index_code: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """5 指数日线 · pandas DataFrame
+
+        Args:
+            index_code: 'sh000001'
+            start: 起始日期 (inclusive) · 'YYYY-MM-DD' or 'YYYYMMDD'
+            end:  截止日期 (inclusive)
+
+        Returns:
+            DataFrame sorted by date ASC · 找不到返回 empty DataFrame
+        """
+        code = index_code.lower()
+        filters: List[tuple] = [("index_code", "=", code)]
+        if start:
+            filters.append(("date", ">=", _to_yyyymmdd_int(start)))
+        if end:
+            filters.append(("date", "<=", _to_yyyymmdd_int(end)))
+        table = pq.read_table(str(self._index_klines_path), filters=filters)
+        df = table.to_pandas()
+        if not df.empty:
+            df = df.sort_values("date").reset_index(drop=True)
+        return df
+
+    def list_quarters(self) -> List[str]:
+        """list 已 parsed 季度 · ['2025-12-31', '2025-09-30', ...]"""
+        files = sorted(self.fin_parsed.glob("gpcw*.parquet"))
+        return [
+            _int_to_yyyymmdd_dash(int(f.stem.replace("gpcw", ""))) for f in files
+        ]
+
+    def doctor(self):
+        """复用现有 Doctor().run()"""
+        from tdx_chronos.doctor import Doctor  # lazy to avoid circular import
+        return Doctor(
+            meta_db_path=self.meta_db_path,
+            parquet_root=self.data_dir,
+        ).run()
+
+
+def _int_to_yyyymmdd_dash(n: int) -> str:
+    """20251231 → '2025-12-31'"""
+    s = str(n)
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
 
 
 def _normalize_symbol(symbol: str) -> str:
