@@ -75,8 +75,58 @@ class TdxChronos:
             if p.is_file():
                 try:
                     os.chmod(p, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-                except (PermissionError, FileNotFoundError):
-                    pass
+                except PermissionError as e:
+                    raise RuntimeError(
+                        f"close() failed to restore write permission on {p}: {e}. "
+                        f"cron may be unable to write until manually chmod'd."
+                    ) from e
         if self._db is not None:
             self._db.close()
             self._db = None
+
+    # ─── Task 3: symbol_info + list_symbols ────────────────────────────────────
+
+    def _ensure_db(self):
+        """Lazy init MetaDB connection"""
+        if self._db is None:
+            from tdx_chronos.meta.db import MetaDB
+            self._db = MetaDB(self.meta_db_path)
+            self._db.init_schema()
+        return self._db
+
+    def symbol_info(self, symbol: str) -> Dict[str, Any]:
+        """symbol metadata · 12,256 行中一行
+
+        Args:
+            symbol: 'sh600000' / 'sz000001' / 'bj838000'
+
+        Returns:
+            dict · 含 symbol/market/first_listing_date/record_count/source_zip
+            找不到返回 {} (不 raise)
+        """
+        db = self._ensure_db()
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT * FROM symbol_metadata WHERE symbol = ?",
+            (symbol.lower(),),
+        ).fetchone()
+        return dict(row) if row else {}
+
+    def list_symbols(self, market: Optional[str] = None) -> List[str]:
+        """list 全部 symbols (or 仅 sh/sz/bj)
+
+        Args:
+            market: None=all · 'sh'='sz'='bj'
+        """
+        db = self._ensure_db()
+        conn = db._connect()
+        if market:
+            rows = conn.execute(
+                "SELECT symbol FROM symbol_metadata WHERE market = ? ORDER BY symbol",
+                (market.lower(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT symbol FROM symbol_metadata ORDER BY symbol"
+            ).fetchall()
+        return [r["symbol"] for r in rows]
