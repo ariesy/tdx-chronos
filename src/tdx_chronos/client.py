@@ -164,9 +164,9 @@ class TdxChronos:
             raise ValueError(f"start ({start}) must be <= end ({end})")
 
         market = norm[:2]
-        market_file = self.parquet_compact / f"{market}.parquet"
+        kline_path = self.parquet_compact / market / f"{norm}.parquet"
 
-        if not market_file.exists():
+        if not kline_path.exists():
             return pd.DataFrame()
 
         filters = [("symbol", "=", norm)]
@@ -176,7 +176,7 @@ class TdxChronos:
             filters.append(("date", "<=", _to_yyyymmdd_int(end)))
 
         try:
-            table = pq.read_table(market_file, filters=filters, columns=columns)
+            table = pq.read_table(str(kline_path), filters=filters, columns=columns)
         except (pa.ArrowInvalid, OSError) as e:
             logging.warning("kline read failed for %s: %s", market_file, e)
             return pd.DataFrame()
@@ -225,18 +225,20 @@ class TdxChronos:
 
         rows = []
         for f in files:
-            df = pq.read_table(str(f)).to_pandas()
-            match = df[df["code"] == bare]
-            if not match.empty:
-                rd = int(f.stem.replace("gpcw", ""))
-                match = match.assign(report_date=rd)
-                if ratio_only:
-                    ratio_cols = [
-                        c for c in match.columns
-                        if "ratio" in c.lower() or "率" in c
-                    ]
-                    match = match[["code", "report_date"] + ratio_cols]
-                rows.append(match)
+            df = pd.read_parquet(f)
+            if not df.empty:
+                df = df.reset_index() if "code" not in df.columns else df
+                match = df[df["code"].astype(str) == bare]
+                if not match.empty:
+                    rd = int(f.stem.replace("gpcw", ""))
+                    match = match.assign(report_date=rd)
+                    if ratio_only:
+                        ratio_cols = [
+                            c for c in match.columns
+                            if "ratio" in c.lower() or "率" in c
+                        ]
+                        match = match[["code", "report_date"] + ratio_cols]
+                    rows.append(match)
         return pd.concat(rows).reset_index(drop=True) if rows else pd.DataFrame()
 
     def shareholders(self, symbol: str) -> pd.DataFrame:
@@ -249,12 +251,16 @@ class TdxChronos:
             DataFrame (可能 empty) · 不 raise · 找不到返回 empty DataFrame
         """
         norm = _normalize_symbol(symbol)
+        bare = norm[2:] if norm.startswith(("sh", "sz", "bj")) else norm
         try:
-            table = pq.read_table(str(self.gp_records), filters=[("symbol", "=", norm)])
+            table = pq.read_table(str(self.gp_records), filters=[("code", "=", bare)])
         except (pa.ArrowInvalid, OSError) as e:
             logging.warning("shareholders read failed for %s: %s", self.gp_records, e)
             return pd.DataFrame()
-        return table.to_pandas()
+        df = table.to_pandas()
+        if not df.empty and "symbol" not in df.columns:
+            df = df.assign(symbol=df["market"] + df["code"])
+        return df
 
     def index_klines(
         self,
@@ -273,7 +279,7 @@ class TdxChronos:
             DataFrame sorted by date ASC · 找不到返回 empty DataFrame
         """
         code = index_code.lower()
-        filters: List[tuple] = [("index_code", "=", code)]
+        filters: List[tuple] = [("symbol", "=", code)]
         if start:
             filters.append(("date", ">=", _to_yyyymmdd_int(start)))
         if end:
