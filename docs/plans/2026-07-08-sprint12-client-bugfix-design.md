@@ -210,11 +210,11 @@ if not df.empty and "symbol" in df.columns:
 **5a · 版本号 bump (P1)**
 - `pyproject.toml` L7: `version = "1.1.0.dev0"` → `"1.4.1"`
 - `src/tdx_chronos/__init__.py` L3: `__version__ = "1.1.0.dev0"` → `"1.4.1"`
-- `CHANGELOG.md`: 顶部新增 `## [v1.4.1] - 2026-07-08` 段，列 9 项修复 + test count 229 → 297 (Sprint 10 已达) → 319 (本次预计 +22)
+- `CHANGELOG.md`: 顶部新增 `## [v1.4.1] - 2026-07-08` 段，列 9 项修复 + test count 229 → 297 (Sprint 10 已达) → 317 (本次 +20)
 
 **5b · README badge 同步 (P1)**
-- `README.md` L5: `[![Tests](...tests-229%20passed-brightgreen)]()` → `[![Tests](...tests-319%20passed-brightgreen)]()`
-- 注: 实际 = Sprint 10 的 297 + Sprint 12 新增 22 = 319
+- `README.md` L5: `[![Tests](...tests-229%20passed-brightgreen)]()` → `[![Tests](...tests-317%20passed-brightgreen)]()`
+- 注: 实际 = Sprint 10 的 297 + Sprint 12 新增 20 = 317
 
 **5c · MetaDB 公开 API (P2)**
 
@@ -292,7 +292,7 @@ def list_symbols(self, market: Optional[str] = None) -> List[str]:
 ```bash
 # 1) 全部 unit tests PASS
 PYTHONPATH=src:vendor/_vendor .venv/bin/python -m pytest tests/unit -v --tb=short
-# 期望: 旧 297 + 新 22 = 319 PASS
+# 期望: 旧 297 + 新 20 = 317 PASS
 
 # 2) integration tests PASS (不变)
 PYTHONPATH=src:vendor/_vendor .venv/bin/python -m pytest tests/integration -m "" -v --tb=short
