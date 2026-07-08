@@ -812,3 +812,137 @@ def test_client_list_symbols_unchanged_behavior(populated_data_dir):
         assert sh == ["sh600000"]
     finally:
         tdx.close()
+
+
+# ─── Sprint 11 T4 · shareholders_history ─────────────────────────────────────
+
+
+def test_shareholders_history_unknown_symbol_returns_empty(fake_data_dir):
+    """unknown symbol → empty DataFrame"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "code": ["600000"], "type": [1], "date": [20250630],
+        "value_1": [1000], "value_2": [2000], "market": ["sh"],
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        # sh999999 不在 fixture → 应返回 empty DataFrame
+        df = tdx.shareholders_history("sh999999")
+        assert df.empty
+    finally:
+        tdx.close()
+
+
+def test_shareholders_history_types_filter(fake_data_dir):
+    """types=[1,2,3,4] → df['type'].unique() ⊆ {1,2,3,4}"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "code":    ["600000"] * 5,
+        "type":    [1, 2, 3, 4, 5],
+        "date":    [20250101, 20250201, 20250301, 20250401, 20250501],
+        "value_1": [100, 200, 300, 400, 500],
+        "value_2": [100, 200, 300, 400, 500],
+        "market":  ["sh"] * 5,
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.shareholders_history("sh600000", types=[1, 2, 3, 4])
+        assert len(df) == 4
+        assert set(df["type"].unique()).issubset({1, 2, 3, 4})
+        assert 5 not in df["type"].values
+    finally:
+        tdx.close()
+
+
+def test_shareholders_history_since_date_filter(fake_data_dir):
+    """since_date='2024-01-01' → df['date'].min() >= 20240101"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "code":    ["600000"] * 4,
+        "type":    [1, 1, 1, 1],
+        "date":    [20230101, 20240101, 20240630, 20250101],
+        "value_1": [100, 200, 300, 400],
+        "value_2": [100, 200, 300, 400],
+        "market":  ["sh"] * 4,
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.shareholders_history("sh600000", since_date="2024-01-01")
+        assert df["date"].min() >= 20240101
+        assert 20230101 not in df["date"].values
+    finally:
+        tdx.close()
+
+
+def test_shareholders_history_limit(fake_data_dir):
+    """limit=2 → len(df) <= 2 (sorted by date DESC)"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({
+        "code":    ["600000"] * 5,
+        "type":    [1, 1, 1, 1, 1],
+        "date":    [20250101, 20250201, 20250301, 20250401, 20250501],
+        "value_1": [100, 200, 300, 400, 500],
+        "value_2": [100, 200, 300, 400, 500],
+        "market":  ["sh"] * 5,
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.shareholders_history("sh600000", limit=2)
+        assert len(df) == 2
+        # sorted by date DESC
+        assert list(df["date"]) == [20250501, 20250401]
+    finally:
+        tdx.close()
+
+
+def test_shareholders_history_combined(fake_data_dir):
+    """types=[1,4] + since_date='2024-01-01' + limit=3 → 全部条件满足"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    # 制造: type 1,2,3,4 各多条, 覆盖 2023/2024 日期
+    rows = []
+    for t in [1, 2, 3, 4]:
+        for d in [20230101, 20240101, 20240630, 20250101]:
+            rows.append({"code": "600000", "type": t, "date": d,
+                         "value_1": 100, "value_2": 100, "market": "sh"})
+    table = pa.table({
+        "code":    [r["code"] for r in rows],
+        "type":    [r["type"] for r in rows],
+        "date":    [r["date"] for r in rows],
+        "value_1": [r["value_1"] for r in rows],
+        "value_2": [r["value_2"] for r in rows],
+        "market":  [r["market"] for r in rows],
+    })
+    pq.write_table(table, str(fake_data_dir / "gp" / "records.parquet"))
+
+    from tdx_chronos.client import TdxChronos
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.shareholders_history(
+            "sh600000", types=[1, 4], since_date="2024-01-01", limit=3,
+        )
+        assert len(df) == 3
+        # types only 1 or 4
+        assert set(df["type"].unique()).issubset({1, 4})
+        # dates >= 20240101
+        assert df["date"].min() >= 20240101
+        # sorted by date DESC
+        assert list(df["date"]) == sorted(df["date"].tolist(), reverse=True)
+    finally:
+        tdx.close()

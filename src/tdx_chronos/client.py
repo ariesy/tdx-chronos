@@ -9,10 +9,11 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 
@@ -246,6 +247,64 @@ class TdxChronos:
         df = table.to_pandas()
         if not df.empty and "symbol" not in df.columns:
             df = df.assign(symbol=df["market"] + df["code"])
+        return df
+
+    def shareholders_history(
+        self,
+        symbol: str,
+        types: Optional[List[int]] = None,
+        since_date: Optional[Union[int, str]] = None,
+        until_date: Optional[Union[int, str]] = None,
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """股本历史 · 带 filter 条件
+
+        Args:
+            symbol:     'sh600000'
+            types:      type filter · e.g. [1, 2, 3, 4] 股本变动; None=全部
+            since_date: YYYYMMDD (int) or 'YYYY-MM-DD' (str); None=不限
+            until_date: 同上
+            limit:      返回最多 N 行 (按 date DESC); None=全部
+
+        Returns:
+            DataFrame · type/date/value_1/value_2/market/code/symbol
+            可能 empty (找不到 symbol) · 不 raise
+        """
+        norm = _normalize_symbol(symbol)
+        bare = norm[2:] if norm.startswith(("sh", "sz", "bj")) else norm
+
+        # Build pyarrow filter expression
+        filters = [ds.field("code") == bare]
+        if types:
+            filters.append(ds.field("type").isin(types))
+        if since_date is not None:
+            since_int = _to_yyyymmdd_int(str(since_date))
+            filters.append(ds.field("date") >= since_int)
+        if until_date is not None:
+            until_int = _to_yyyymmdd_int(str(until_date))
+            filters.append(ds.field("date") <= until_int)
+        from functools import reduce
+        import operator
+        combined = reduce(operator.and_, filters)
+
+        try:
+            if not self.gp_records.exists():
+                return pd.DataFrame()
+            dataset = ds.dataset(str(self.gp_records), format="parquet")
+            table = dataset.to_table(filter=combined, columns=[
+                "type", "date", "value_1", "value_2", "market", "code",
+            ])
+        except (pa.ArrowInvalid, OSError) as e:
+            logging.warning("shareholders_history read failed for %s: %s", self.gp_records, e)
+            return pd.DataFrame()
+
+        df = table.to_pandas()
+        if not df.empty:
+            df = df.sort_values("date", ascending=False)
+            if limit is not None:
+                df = df.head(limit).reset_index(drop=True)
+            if "symbol" not in df.columns:
+                df = df.assign(symbol=df["market"] + df["code"])
         return df
 
     def index_klines(
