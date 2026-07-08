@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -298,13 +299,18 @@ class TdxChronos:
         """list 已 parsed 季度 · 'YYYY-MM-DD' strings
 
         Returns:
-            List[str] · sorted by date DESC (newest first: '2025-12-31', '2025-09-30', ...)
-            Empty list if no fin/parsed/gpcw*.parquet files
+            List[str] · sorted by date DESC (newest first: '2026-03-31', '2025-12-31', ...)
+            Files not matching 8-digit date stem are skipped (defensive)
         """
-        files = sorted(self.fin_parsed.glob("gpcw*.parquet"))
-        return [
-            _int_to_yyyymmdd_dash(int(f.stem.replace("gpcw", ""))) for f in files
-        ]
+        _QUARTER_STEM_RE = re.compile(r"^gpcw(\d{8})\.parquet$")
+        dates: list[int] = []
+        for f in self.fin_parsed.glob("gpcw*.parquet"):
+            m = _QUARTER_STEM_RE.match(f.name)
+            if m is None:
+                continue
+            dates.append(int(m.group(1)))
+        dates.sort(reverse=True)
+        return [_int_to_yyyymmdd_dash(d) for d in dates]
 
     def doctor(self) -> DoctorReport:
         """复用现有 Doctor().run()"""

@@ -534,3 +534,59 @@ def test_normalize_already_prefixed_passthrough():
     assert _normalize_symbol("bj920001") == "bj920001"
     assert _normalize_symbol("BJ920001") == "bj920001"
     assert _normalize_symbol("Sh600000") == "sh600000"
+# ─── Sprint 12 T2 · list_quarters DESC + 过滤 gpcw0 ───────────────
+
+
+def test_list_quarters_returns_desc_order(populated_data_dir, monkeypatch):
+    """list_quarters 必须按日期 DESC 返回 (newest first)"""
+    from tdx_chronos.client import TdxChronos
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    fin_dir = populated_data_dir / "fin" / "parsed"
+    for stem in ("gpcw20201231.parquet", "gpcw20251231.parquet", "gpcw20240630.parquet"):
+        pq.write_table(pa.table({"code": [], "x": []}), fin_dir / stem)
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        quarters = tdx.list_quarters()
+        assert quarters == ["2025-12-31", "2024-06-30", "2020-12-31"], \
+            f"want DESC, got {quarters}"
+    finally:
+        tdx.close()
+
+def test_list_quarters_skips_invalid_stem(populated_data_dir):
+    """gpcw0.parquet / gpcw999.parquet 等非 8 位日期 stem 必须跳过"""
+    from tdx_chronos.client import TdxChronos
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    fin_dir = populated_data_dir / "fin" / "parsed"
+    pq.write_table(pa.table({"code": [], "x": []}), fin_dir / "gpcw20251231.parquet")
+    pq.write_table(pa.table({"code": [], "x": []}), fin_dir / "gpcw0.parquet")
+    pq.write_table(pa.table({"code": [], "x": []}), fin_dir / "gpcw999.parquet")
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        quarters = tdx.list_quarters()
+        assert quarters == ["2025-12-31"], f"want only valid, got {quarters}"
+    finally:
+        tdx.close()
+
+
+def test_list_quarters_strict_8_digit_date(populated_data_dir):
+    """stem 必须严格 8 位数字 (gpcw2025123.parquet 7 位应跳过)"""
+    from tdx_chronos.client import TdxChronos
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    fin_dir = populated_data_dir / "fin" / "parsed"
+    pq.write_table(pa.table({"code": [], "x": []}), fin_dir / "gpcw20251231.parquet")
+    pq.write_table(pa.table({"code": [], "x": []}), fin_dir / "gpcw2025123.parquet")
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        quarters = tdx.list_quarters()
+        assert quarters == ["2025-12-31"], f"want strict 8-digit filter, got {quarters}"
+    finally:
+        tdx.close()
