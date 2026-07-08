@@ -4,6 +4,50 @@
 
 ---
 
+## [v1.4.1] - 2026-07-08
+
+Sprint 12 · 9 个 client 层 bug 集中修复 · 297 → 317 tests (+20)
+
+### Fixed (修复)
+
+- 🐛 **`_normalize_symbol` 92→bj** (`1e08813`) - 北交所新股 (`920001`/`830017`) 误归 sh
+  - 修复: `92` 前缀在 `9` 之前特判 → bj; sh B 股 (`900901`) 保持
+- 🐛 **`list_quarters` 排序方向反** (`99e2e7b`) - docstring 承诺 DESC, 实现 ASC
+  - 修复: `sorted(..., reverse=True)` + 严格 8 位日期 stem 正则
+- 🐛 **`gpcw0.parquet` 脏数据** (`99e2e7b`) - 0 行文件被 `glob` 命中, 输出 `'0--'`
+  - 修复: 正则 `^gpcw(\d{8})\.parquet$` 过滤 + 物理删除
+- 🐛 **`TdxChronos.close()` readonly=False 路径 db 泄漏** (`e2774fa`) - 早 return 跳过 `db.close()`
+  - 修复: db 释放与 readonly 解耦, 永远先 release
+- 🐛 **`index_klines` 多 `symbol` 列** (`7c2423a`) - 与 `kline` 契约不一致
+  - 修复: `df.drop(columns=["symbol"])`, 保留 `code/ds_code/name/market` 元信息
+
+### Changed (变更)
+
+- 🔧 **MetaDB 公开 API 新增** `get_symbol(symbol)` + `list_symbols(market=None)` (5 tests)
+  - 客户端层 `symbol_info` / `list_symbols` 改用新方法, 不再调 `db._connect()` 私有方法
+- 📦 **版本号对齐 v1.4.1**: `pyproject.toml` + `__init__.py` + `CHANGELOG.md` + `README.md`
+- 📊 **README 测试 badge**: 229 passed → 317 passed
+
+### Known Issue (已知, 不修)
+
+- ⚠️ **`data/meta/meta.db-shm` 残留 0400** - Sprint 11 `_clean_stale_wal_files()` 已自动恢复, 根因待查
+  - 触发场景: 集成测试期间, umask 0o277 环境创建 SHM
+  - 现状: 启动时有 warning 但不影响功能
+
+### Test Summary
+
+| Sprint | 新增 | 累计 | 累计时间 |
+|---|---:|---:|---:|
+| 11 | 3 | 300 | - |
+| 12 | 20 | **317** | ~130s |
+
+### 修复验证
+
+- 5 个 `pyarrow` 反向验证脚本全部 PASS (见 design doc §验收标准)
+- integration 9 测试 PASS (无变化)
+
+---
+
 ## [v1.1.0] - 2026-07-05
 
 v1.1 是首个 **生产可用** 版本。38 commits · 229 PASSED · 7 Sprint。

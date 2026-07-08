@@ -1,10 +1,10 @@
 # tdx-chronos
 
-> **v1.4.0 (Sprint 10 · Query Facade)** · A 股离线数据仓库 · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地统一查询接口
+> **v1.4.1 (Sprint 12 · Client Bugfixes)** · A 股离线数据仓库 · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地统一查询接口
 
-[![Status](https://img.shields.io/badge/status-v1.4.0-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-229%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
+[![Status](https://img.shields.io/badge/status-v1.4.1-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-317%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
 
-**设计哲学**：Facade Pattern — 底层解析细节对调用方透明；Readonly-first — 所有写操作通过 `readonly=False` 显式授权；Real-data-tested — 每一行代码在真实数据上验证；No-network — 纯本地数据查询；TDD coverage — 229 tests passing。
+**设计哲学**：Facade Pattern — 底层解析细节对调用方透明；Readonly-first — 所有写操作通过 `readonly=False` 显式授权；Real-data-tested — 每一行代码在真实数据上验证；No-network — 纯本地数据查询；TDD coverage — 317 tests passing。
 
 ## 快速开始
 

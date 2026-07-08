@@ -703,3 +703,112 @@ def test_index_klines_preserves_metadata_columns(fake_data_dir):
         assert "market" in df.columns
     finally:
         tdx.close()
+
+
+# ─── Sprint 12 T5b · client 调 MetaDB public API ─────────────────
+
+
+def test_client_symbol_info_uses_meta_db_public_api(monkeypatch, populated_data_dir):
+    """TdxChronos.symbol_info 必须调 MetaDB.get_symbol, 不调 _connect"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta import db as db_mod
+
+    # Pre-populate
+    from tdx_chronos.meta.db import MetaDB
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.close()
+
+    # Spy on MetaDB.get_symbol
+    call_count = {"n": 0}
+    original = MetaDB.get_symbol
+    def spy(self, symbol):
+        call_count["n"] += 1
+        return original(self, symbol)
+    monkeypatch.setattr(MetaDB, "get_symbol", spy)
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        info = tdx.symbol_info("sh600000")
+        assert info["symbol"] == "sh600000"
+        assert call_count["n"] >= 1, "MetaDB.get_symbol was not called"
+    finally:
+        tdx.close()
+
+
+def test_client_list_symbols_uses_meta_db_public_api(monkeypatch, populated_data_dir):
+    """TdxChronos.list_symbols 必须调 MetaDB.list_symbols"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    # Pre-populate
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")
+    db.close()
+
+    # Spy on MetaDB.list_symbols
+    call_count = {"n": 0}
+    original = MetaDB.list_symbols
+    def spy(self, market=None):
+        call_count["n"] += 1
+        return original(self, market)
+    monkeypatch.setattr(MetaDB, "list_symbols", spy)
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        syms = tdx.list_symbols()
+        assert "sh600000" in syms
+        assert "sz000001" in syms
+        assert call_count["n"] >= 1, "MetaDB.list_symbols was not called"
+
+        syms_sh = tdx.list_symbols("sh")
+        assert syms_sh == ["sh600000"]
+    finally:
+        tdx.close()
+
+
+def test_client_symbol_info_unchanged_behavior(populated_data_dir):
+    """symbol_info 行为回归: 找/不找/大小写"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        # 找到
+        info = tdx.symbol_info("sh600000")
+        assert info["symbol"] == "sh600000"
+        # 大小写
+        info2 = tdx.symbol_info("SH600000")
+        assert info2["symbol"] == "sh600000"
+        # 找不到返回 {} (不 raise)
+        info3 = tdx.symbol_info("sh999999")
+        assert info3 == {}
+    finally:
+        tdx.close()
+
+
+def test_client_list_symbols_unchanged_behavior(populated_data_dir):
+    """list_symbols 行为回归: 全列/过滤/排序"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        # 全部 sorted ASC
+        syms = tdx.list_symbols()
+        assert syms == ["sh600000", "sz000001"]
+        # 过滤
+        sh = tdx.list_symbols("sh")
+        assert sh == ["sh600000"]
+    finally:
+        tdx.close()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tdx-chronos"
-version = "1.1.0.dev0"
+version = "1.4.1"
 description = "A 股离线数据仓库 · 通达信 .day 集中下载 + Parquet 整理"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -110,12 +110,7 @@ class TdxChronos:
             找不到返回 {} (不 raise)
         """
         db = self._ensure_db()
-        conn = db._connect()
-        row = conn.execute(
-            "SELECT * FROM symbol_metadata WHERE symbol = ?",
-            (symbol.lower(),),
-        ).fetchone()
-        return dict(row) if row else {}
+        return db.get_symbol(_normalize_symbol(symbol)) or {}
 
     def list_symbols(self, market: Optional[str] = None) -> List[str]:
         """list symbols in meta.db
@@ -127,17 +122,7 @@ class TdxChronos:
             List[str] · sorted by symbol ASC
         """
         db = self._ensure_db()
-        conn = db._connect()
-        if market:
-            rows = conn.execute(
-                "SELECT symbol FROM symbol_metadata WHERE market = ? ORDER BY symbol",
-                (market.lower(),),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT symbol FROM symbol_metadata ORDER BY symbol"
-            ).fetchall()
-        return [r["symbol"] for r in rows]
+        return db.list_symbols(market)
 
     # ─── Task 4: kline (pyarrow predicate pushdown) ──────────────────────────
 

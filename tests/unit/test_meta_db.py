@@ -392,3 +392,47 @@ class TestStaleSHMRecovery:
         rid = db.record_download("recovered.zip", "test.tdx", 100, "abc", "pending", None)
         assert rid > 0
         db.close()
+
+
+# ─── Sprint 12 T5a · MetaDB public API (get_symbol + list_symbols) ───
+
+
+def test_get_symbol_found(db):
+    """get_symbol 找到时返回 dict"""
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    result = db.get_symbol("sh600000")
+    assert result is not None
+    assert result["symbol"] == "sh600000"
+    assert result["market"] == "sh"
+    assert result["first_listing_date"] == 19991110
+
+
+def test_get_symbol_not_found_returns_none(db):
+    """get_symbol 找不到返回 None (与 TdxChronos.symbol_info 的空 dict 区分)"""
+    result = db.get_symbol("sh999999")
+    assert result is None
+
+
+def test_list_symbols_all_sorted_asc(db):
+    """list_symbols(market=None) 返回所有 symbols, sorted ASC"""
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")
+    db.record_symbol("bj430017", "bj", 20200807, 100, "hsjday.zip")
+    result = db.list_symbols()
+    assert result == ["bj430017", "sh600000", "sz000001"]
+
+
+def test_list_symbols_filtered_by_market(db):
+    """list_symbols(market='sh') 仅返回 sh 市场 symbols"""
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.record_symbol("sh600036", "sh", 20020423, 3000, "hsjday.zip")
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")
+    result = db.list_symbols(market="sh")
+    assert result == ["sh600000", "sh600036"]
+
+
+def test_list_symbols_case_insensitive_market(db):
+    """list_symbols(market='SH') 与 'sh' 等价 (大小写不敏感)"""
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    result = db.list_symbols(market="SH")
+    assert result == ["sh600000"]

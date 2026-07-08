@@ -236,6 +236,44 @@ class MetaDB:
         ).fetchall()
         return [r["symbol"] for r in rows]
 
+    def get_symbol(self, symbol: str) -> Optional[dict]:
+        """Sprint 12 T5a · public symbol metadata lookup
+
+        Args:
+            symbol: 归一化后的 symbol, e.g. 'sh600000'
+
+        Returns:
+            dict (含 symbol/market/first_listing_date/record_count/source_zip/...)
+            or None if not found
+        """
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT * FROM symbol_metadata WHERE symbol = ?",
+            (symbol.lower(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_symbols(self, market: Optional[str] = None) -> List[str]:
+        """Sprint 12 T5a · public symbol list (replaces client._connect() bypass)
+
+        Args:
+            market: 'sh' / 'sz' / 'bj' filter · None=全部 3 个市场 (case-insensitive)
+
+        Returns:
+            List[str] · sorted by symbol ASC
+        """
+        conn = self._connect()
+        if market is not None:
+            rows = conn.execute(
+                "SELECT symbol FROM symbol_metadata WHERE market = ? ORDER BY symbol",
+                (market.lower(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT symbol FROM symbol_metadata ORDER BY symbol"
+            ).fetchall()
+        return [r["symbol"] for r in rows]
+
     def get_unparsed_files(self, source_zip: str) -> List[str]:
         """返回某 zip 的未解析 symbols (供 cron 重跑用)"""
         conn = self._connect()
