@@ -189,3 +189,170 @@ class TestTdxFinQuarter:
         df_read = pd.read_parquet(pq_path)
         assert df_read.shape == (5524, 585)
         assert df_read.index.name == "code"
+
+
+# ─── Sprint 11 T2 · parse_quarters_incremental ──────────────────────────────────
+
+
+class TestParseQuartersIncremental:
+    """Sprint 11 T2 · TdxFinReader.parse_quarters_incremental() 增量入口"""
+
+    def test_0_quarter_in_db_parses_all(self, tmp_path):
+        """0 quarter in DB → 全部 parse, 0 skipped"""
+        from pathlib import Path
+        from tdx_chronos.fin.tdxfin import TdxFinReader
+        from tdx_chronos.meta.db import MetaDB
+
+        # raw_dir 复制一个真实 .dat
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        real_dat = Path("tests/fixtures/fin/gpcw20260331.dat")
+        (raw_dir / real_dat.name).write_bytes(real_dat.read_bytes())
+        output_dir = tmp_path / "parsed"
+        db_path = tmp_path / "meta.db"
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+
+        summary = TdxFinReader.parse_quarters_incremental(
+            raw_dir=raw_dir, output_dir=output_dir, db_path=db_path,
+        )
+        assert summary.parsed == 1
+        assert summary.skipped == 0
+        assert summary.failed == 0
+        db.close()
+
+    def test_1_quarter_ok_mtime_same_skips(self, tmp_path):
+        """1 quarter 已 OK + mtime 同 → skipped=1, parsed=0"""
+        from pathlib import Path
+        import time
+        from tdx_chronos.fin.tdxfin import TdxFinReader
+        from tdx_chronos.meta.db import MetaDB
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        real_dat = Path("tests/fixtures/fin/gpcw20260331.dat")
+        raw_dat = raw_dir / real_dat.name
+        raw_dat.write_bytes(real_dat.read_bytes())
+        output_dir = tmp_path / "parsed"
+        db_path = tmp_path / "meta.db"
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        # 手动 record 为已 parse_ok, 写入当前 mtime
+        mtime = raw_dat.stat().st_mtime
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_dat),
+            file_size=raw_dat.stat().st_size,
+            stock_count=5524,
+            parquet_path=str(output_dir / "gpcw20260331.parquet"),
+            parse_ok=True,
+            file_mtime=mtime,
+        )
+        db.close()
+
+        summary = TdxFinReader.parse_quarters_incremental(
+            raw_dir=raw_dir, output_dir=output_dir, db_path=db_path,
+        )
+        assert summary.skipped == 1
+        assert summary.parsed == 0
+        assert summary.failed == 0
+
+    def test_1_quarter_ok_mtime_changed_reparses(self, tmp_path):
+        """1 quarter 已 OK + mtime 变 → skipped=0, parsed=1"""
+        from pathlib import Path
+        import os
+        from tdx_chronos.fin.tdxfin import TdxFinReader
+        from tdx_chronos.meta.db import MetaDB
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        real_dat = Path("tests/fixtures/fin/gpcw20260331.dat")
+        raw_dat = raw_dir / real_dat.name
+        raw_dat.write_bytes(real_dat.read_bytes())
+        output_dir = tmp_path / "parsed"
+        db_path = tmp_path / "meta.db"
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        # record 为已 parse, 但用旧 mtime
+        old_mtime = raw_dat.stat().st_mtime - 100
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_dat),
+            file_size=raw_dat.stat().st_size,
+            stock_count=5524,
+            parquet_path=str(output_dir / "gpcw20260331.parquet"),
+            parse_ok=True,
+            file_mtime=old_mtime,
+        )
+        db.close()
+        # 改文件 mtime
+        old_mtime_ts = old_mtime + 10
+        os.utime(raw_dat, (old_mtime_ts, old_mtime_ts))
+
+        summary = TdxFinReader.parse_quarters_incremental(
+            raw_dir=raw_dir, output_dir=output_dir, db_path=db_path,
+        )
+        assert summary.skipped == 0
+        assert summary.parsed == 1
+        assert summary.failed == 0
+
+    def test_1_quarter_failed_retries(self, tmp_path):
+        """1 quarter failed → skipped=0, parsed=1 (重试)"""
+        from pathlib import Path
+        from tdx_chronos.fin.tdxfin import TdxFinReader
+        from tdx_chronos.meta.db import MetaDB
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        real_dat = Path("tests/fixtures/fin/gpcw20260331.dat")
+        raw_dat = raw_dir / real_dat.name
+        raw_dat.write_bytes(real_dat.read_bytes())
+        output_dir = tmp_path / "parsed"
+        db_path = tmp_path / "meta.db"
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        # record 为 failed
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_dat),
+            file_size=raw_dat.stat().st_size,
+            stock_count=0,
+            parse_ok=False,
+            error="corrupt",
+        )
+        db.close()
+
+        summary = TdxFinReader.parse_quarters_incremental(
+            raw_dir=raw_dir, output_dir=output_dir, db_path=db_path,
+        )
+        assert summary.skipped == 0
+        assert summary.parsed == 1
+        assert summary.failed == 0
+
+    def test_placeholder_zip_is_placeholder_flag(self, tmp_path):
+        """占位 zip → is_placeholder=1,不视为真 quarter"""
+        from pathlib import Path
+        from tdx_chronos.fin.tdxfin import TdxFinReader
+        from tdx_chronos.meta.db import MetaDB
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        real_placeholder = Path("tests/fixtures/fin/gpcw20261231.zip")
+        (raw_dir / real_placeholder.name).write_bytes(real_placeholder.read_bytes())
+        output_dir = tmp_path / "parsed"
+        db_path = tmp_path / "meta.db"
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+
+        summary = TdxFinReader.parse_quarters_incremental(
+            raw_dir=raw_dir, output_dir=output_dir, db_path=db_path,
+        )
+        # placeholder 不 parse → parsed=0 (placeholder 被 parse_quarter 识别但 is_placeholder=True)
+        # parse_quarters_incremental counts parsed only when is_placeholder=False
+        assert summary.parsed == 0
+        db.close()

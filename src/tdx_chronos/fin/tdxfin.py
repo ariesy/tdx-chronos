@@ -36,10 +36,12 @@
 """
 from __future__ import annotations
 
+import re
 import struct
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -66,6 +68,15 @@ TAIL_UNKNOWN_COLUMNS = [
 # 164B placeholder zip detection (未来季 · 未披露)
 PLACEHOLDER_ZIP_SIZE = 164
 PLACEHOLDER_DAT_SIZE = 20  # 占位 .dat 仅 20 字节
+
+
+@dataclass
+class IncrementalSummary:
+    """T2 · parse_quarters_incremental 返回值"""
+    skipped: int
+    parsed: int
+    failed: int
+    elapsed_seconds: float
 
 
 @dataclass
@@ -308,3 +319,94 @@ class TdxFinReader:
                 yield TdxFinReader.parse_quarter(path)
             except Exception:
                 continue
+
+    @staticmethod
+    def parse_quarters_incremental(
+        raw_dir: Path,
+        output_dir: Path,
+        db_path: Path,
+    ) -> IncrementalSummary:
+        """增量解析 raw_dir 下所有 quarter · 跳过已 parse_ok 且 mtime 未变的
+
+        Args:
+            raw_dir:   gpcw*.zip / gpcw*.dat 所在目录
+            output_dir: Parquet 输出目录
+            db_path:   MetaDB 路径
+
+        Returns:
+            IncrementalSummary(skipped, parsed, failed, elapsed_seconds)
+        """
+        import logging
+        import time
+        from pathlib import Path
+        from tdx_chronos.meta.db import MetaDB
+
+        log = logging.getLogger("tdxfin_incr")
+        start = time.monotonic()
+        raw_dir = Path(raw_dir)
+        output_dir = Path(output_dir)
+        db_path = Path(db_path)
+
+        db = MetaDB(str(db_path))
+        db.init_schema()
+
+        paths = sorted(raw_dir.glob("gpcw*.zip")) + sorted(raw_dir.glob("gpcw*.dat"))
+        skipped = 0
+        parsed = 0
+        failed = 0
+
+        for path in paths:
+            report_date = _stem_to_report_date(path.stem)
+            if report_date is None:
+                continue
+
+            if db.should_skip_quarter(report_date, path):
+                log.info("skip %s (already parsed, mtime unchanged)", path.name)
+                skipped += 1
+                continue
+
+            try:
+                qd = TdxFinReader.parse_quarter(path, output_dir=output_dir)
+                file_mtime = path.stat().st_mtime if path.exists() else None
+                stock_count = len(qd.df) if not qd.df.empty else 0
+                db.record_quarter_metadata(
+                    report_date=report_date,
+                    file_path=str(path),
+                    file_size=path.stat().st_size if path.exists() else 0,
+                    stock_count=stock_count,
+                    parquet_path=str(output_dir / f"gpcw{report_date}.parquet") if not qd.is_placeholder else None,
+                    is_placeholder=qd.is_placeholder,
+                    parse_ok=(not qd.is_placeholder and stock_count > 0),
+                    error=None,
+                    file_mtime=file_mtime,
+                )
+                parsed += 0 if qd.is_placeholder else 1
+                log.info("parsed %s → %d stocks", path.name, stock_count)
+            except Exception as exc:
+                file_mtime = path.stat().st_mtime if path.exists() else None
+                db.record_quarter_metadata(
+                    report_date=report_date,
+                    file_path=str(path),
+                    file_size=path.stat().st_size if path.exists() else 0,
+                    stock_count=0,
+                    parse_ok=False,
+                    error=str(exc),
+                    file_mtime=file_mtime,
+                )
+                failed += 1
+                log.warning("failed %s: %s", path.name, exc)
+
+        db.close()
+        elapsed = time.monotonic() - start
+        return IncrementalSummary(
+            skipped=skipped, parsed=parsed, failed=failed, elapsed_seconds=elapsed,
+        )
+
+
+def _stem_to_report_date(stem: str) -> Optional[int]:
+    """gpcw20260331 → 20260331 · stem 无效返回 None"""
+    import re
+    m = re.match(r"^gpcw(\d{8})$", stem)
+    if m:
+        return int(m.group(1))
+    return None
