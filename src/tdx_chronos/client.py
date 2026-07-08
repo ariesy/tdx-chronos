@@ -327,6 +327,8 @@ def _normalize_symbol(symbol: str) -> str:
     if s.startswith(("sh", "sz", "bj")):
         return s
     if len(s) == 6 and s.isdigit():
+        if s.startswith("92"):                  # Sprint 12 T1 · 北交所新股优先
+            return "bj" + s
         if s.startswith(("5", "6", "9")):
             return "sh" + s
         if s.startswith(("0", "2", "3")):

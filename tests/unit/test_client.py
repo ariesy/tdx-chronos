@@ -498,3 +498,39 @@ def test_finance_ratio_only_filter(fake_data_dir):
     assert "资产总计" not in df.columns    # filtered out
     assert "负债合计" not in df.columns    # filtered out
     assert "净利润" not in df.columns      # filtered out
+
+
+# ─── Sprint 12 T1 · _normalize_symbol 92→bj ────────────────────────
+
+
+def test_normalize_92xx_to_bj_market():
+    """92 开头两位 → bj (北交所新股, 实际数据验证 bj920001~bj920005 存在)"""
+    from tdx_chronos.client import _normalize_symbol
+    assert _normalize_symbol("920001") == "bj920001"
+    assert _normalize_symbol("920123") == "bj920123"
+
+
+def test_normalize_9_b_share_unchanged():
+    """9 开头 (非 92) → sh (B 股回归测试, 不能被 T1 改坏)"""
+    from tdx_chronos.client import _normalize_symbol
+    assert _normalize_symbol("900901") == "sh900901"
+    assert _normalize_symbol("900902") == "sh900902"
+
+
+def test_normalize_other_prefixes_unchanged():
+    """5/6/0/2/3/4/8 前缀回归"""
+    from tdx_chronos.client import _normalize_symbol
+    assert _normalize_symbol("600000") == "sh600000"  # 6 → sh
+    assert _normalize_symbol("500001") == "sh500001"  # 5 → sh
+    assert _normalize_symbol("000001") == "sz000001"  # 0 → sz
+    assert _normalize_symbol("300750") == "sz300750"  # 3 → sz (创业板)
+    assert _normalize_symbol("430017") == "bj430017"  # 4 → bj
+    assert _normalize_symbol("830017") == "bj830017"  # 8 → bj
+
+
+def test_normalize_already_prefixed_passthrough():
+    """已带前缀的 passthrough (大小写不敏感)"""
+    from tdx_chronos.client import _normalize_symbol
+    assert _normalize_symbol("bj920001") == "bj920001"
+    assert _normalize_symbol("BJ920001") == "bj920001"
+    assert _normalize_symbol("Sh600000") == "sh600000"
