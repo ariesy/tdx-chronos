@@ -26,7 +26,7 @@
 
 ---
 
-## T1 · `_normalize_symbol` 92→bj 北交所新股归类修复 (P0 · 修复 #1)
+## Task 1: T1 · `_normalize_symbol` 92→bj 北交所新股归类修复 (P0 · 修复 #1)
 
 **Files**:
 - Modify: `src/tdx_chronos/client.py:329-335` (`_normalize_symbol` 函数)
@@ -166,7 +166,7 @@ git commit -m "T1 · _normalize_symbol 92→bj 北交所新股归类修复 (Spri
 
 ---
 
-## T2 · `list_quarters()` DESC 排序 + 过滤 gpcw0.parquet (P0 · 修复 #2 #3)
+## Task 2: T2 · `list_quarters()` DESC 排序 + 过滤 gpcw0.parquet (P0 · 修复 #2 #3)
 
 **Files**:
 - Modify: `src/tdx_chronos/client.py:297-307` (`list_quarters` 方法)
@@ -369,7 +369,7 @@ git commit -m "T2 · list_quarters DESC + 过滤 gpcw0.parquet 脏数据 (Sprint
 
 ---
 
-## T3 · `TdxChronos.close()` readonly=False 路径 db 泄漏修复 (P0 · 修复 #4)
+## Task 3: T3 · `TdxChronos.close()` readonly=False 路径 db 泄漏修复 (P0 · 修复 #4)
 
 **Files**:
 - Modify: `src/tdx_chronos/client.py:73-89` (`close` 方法)
@@ -526,7 +526,7 @@ git commit -m "T3 · TdxChronos.close() 修复 readonly=False 路径 db 泄漏 (
 
 ---
 
-## T4 · `index_klines` drop symbol 列对齐 `kline` 契约 (P1 · 修复 #5)
+## Task 4: T4 · `index_klines` drop symbol 列对齐 `kline` 契约 (P1 · 修复 #5)
 
 **Files**:
 - Modify: `src/tdx_chronos/client.py:265-295` (`index_klines` 方法)
@@ -696,7 +696,7 @@ git commit -m "T4 · index_klines drop symbol 列对齐 kline 契约 (Sprint 12 
 
 ---
 
-## T5 · v1.4.1 版本对齐 + MetaDB 公开 API + README/CHANGELOG (P1/P2 · 修复 #6 #7 #8 #9)
+## Task 5: T5 · v1.4.1 版本对齐 + MetaDB 公开 API + README/CHANGELOG (P1/P2 · 修复 #6 #7 #8 #9)
 
 **Files**:
 - Modify: `src/tdx_chronos/meta/db.py:179` (init_schema 后) 追加 `get_symbol` + `list_symbols` 公开方法
@@ -787,7 +787,7 @@ Expected: 5/5 FAIL (AttributeError: MetaDB has no attribute 'get_symbol')。
 找到 `get_symbols_by_market` 方法 (L230), 在它之前插入:
 
 ```python
-    def get_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_symbol(self, symbol: str) -> Optional[dict]:
         """Sprint 12 T5a · public symbol metadata lookup
 
         Args:
