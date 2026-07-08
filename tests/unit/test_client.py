@@ -590,3 +590,42 @@ def test_list_quarters_strict_8_digit_date(populated_data_dir):
         assert quarters == ["2025-12-31"], f"want strict 8-digit filter, got {quarters}"
     finally:
         tdx.close()
+
+
+# ─── Sprint 12 T3 · close() 资源释放 ──────────────────────────────
+
+
+def test_close_releases_db_when_readonly_false(populated_data_dir):
+    """readonly=False 路径 close() 必须释放 db 连接 (P0 修复)"""
+    from tdx_chronos.client import TdxChronos
+
+    # Pre-populate so lazy db opens
+    from tdx_chronos.meta.db import MetaDB
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+
+    # Force lazy db open via symbol_info
+    info = tdx.symbol_info("sh600000")
+    assert info["symbol"] == "sh600000"
+    assert tdx._db is not None  # db 已开
+
+    # Close (no chmod attempted in readonly=False path)
+    tdx.close()
+
+    # Critical: db must be released
+    assert tdx._db is None, "readonly=False path leaked db connection"
+
+
+def test_close_releases_db_when_readonly_true(populated_data_dir):
+    """readonly=True 路径 close() 仍释放 db (回归)"""
+    from tdx_chronos.client import TdxChronos
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=True)
+    info = tdx.symbol_info("sh600000")
+    assert tdx._db is not None
+
+    tdx.close()
+    assert tdx._db is None, "readonly=True path leaked db connection"

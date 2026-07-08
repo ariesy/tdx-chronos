@@ -72,13 +72,13 @@ class TdxChronos:
                     pass
 
     def close(self):
-        if not self.readonly:
-            return
-        # 1. Release db connection FIRST (before any chmod that may fail)
+        # 1. Always release db connection FIRST (regardless of readonly)
         db, self._db = self._db, None
         if db is not None:
             db.close()
-        # 2. Then restore chmod (may fail with RuntimeError; that's OK — caller will know)
+        # 2. Then restore chmod only when readonly=True
+        if not self.readonly:
+            return
         for p in [self.gp_records, self._index_klines_path, self.meta_db_path]:
             if p.is_file():
                 try:
