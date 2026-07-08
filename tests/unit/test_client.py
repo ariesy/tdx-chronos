@@ -946,3 +946,10 @@ def test_shareholders_history_combined(fake_data_dir):
         assert list(df["date"]) == sorted(df["date"].tolist(), reverse=True)
     finally:
         tdx.close()
+
+
+def test_tdx_chronos_exported_from_top_level():
+    """Sprint 11 T6 fix: TdxChronos 必须在 tdx_chronos package 顶层可 import"""
+    from tdx_chronos import TdxChronos as TopLevel
+    from tdx_chronos.client import TdxChronos as FromClient
+    assert TopLevel is FromClient, "Top-level TdxChronos 应与 tdx_chronos.client.TdxChronos 是同一 class"

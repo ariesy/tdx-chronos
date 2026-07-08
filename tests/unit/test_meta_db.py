@@ -526,3 +526,38 @@ class TestShouldSkipQuarter:
 
         result = db.should_skip_quarter(20260331, nonexistent)
         assert result is False
+
+
+def test_init_schema_migrates_existing_quarter_metadata_adds_file_mtime(tmp_path):
+    """T6a · Sprint 11 fix-up: init_schema() 必须迁移老 quarter_metadata (无 file_mtime) 加 file_mtime 列"""
+    import sqlite3
+    # 1. 创建老 schema DB (无 file_mtime)
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE quarter_metadata (
+            report_date INTEGER PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            file_size INTEGER,
+            stock_count INTEGER,
+            parquet_path TEXT,
+            is_placeholder INTEGER NOT NULL DEFAULT 0,
+            parsed_at TIMESTAMP,
+            parse_ok INTEGER NOT NULL DEFAULT 0,
+            error TEXT
+        );
+    """)
+    conn.execute(
+        "INSERT INTO quarter_metadata (report_date, file_path, parse_ok) VALUES (20260331, '/tmp/gpcw20260331.dat', 1)"
+    )
+    conn.commit()
+    conn.close()
+    # 2. 用 MetaDB 打开 (走 init_schema)
+    db = MetaDB(str(db_path))
+    db.init_schema()
+    # 3. 验证 file_mtime 列已加
+    cols = {r["name"] for r in db._conn.execute("PRAGMA table_info(quarter_metadata)").fetchall()}
+    assert "file_mtime" in cols, f"file_mtime not migrated, cols={cols}"
+    # 4. 原数据仍在
+    assert db._conn.execute("SELECT COUNT(*) FROM quarter_metadata").fetchone()[0] == 1
+    db.close()

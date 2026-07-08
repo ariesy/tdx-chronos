@@ -178,10 +178,20 @@ class MetaDB:
     # ---------------------------------------------------------------------
 
     def init_schema(self) -> None:
-        """初始化 schema (idempotent)"""
+        """初始化 schema (idempotent)
+
+        Sprint 11 T6 fix: 对已有 quarter_metadata 表自动迁移,加 file_mtime 列
+        (Sprint 11 T1 ALTER 误放 init_quarter_metadata_schema helper,
+        T2 parse_quarters_incremental 只走 init_schema → 生产 DB 缺列)
+        """
         conn = self._connect()
         with self._txn() as cur:
             cur.executescript(self.SCHEMA)
+        # Sprint 11 T6: 全 caller 入口的 schema migration (幂等)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(quarter_metadata)").fetchall()}
+        if "file_mtime" not in cols:
+            with self._txn() as cur:
+                cur.execute("ALTER TABLE quarter_metadata ADD COLUMN file_mtime REAL")
 
     # ---------------------------------------------------------------------
     # CRUD · symbol_metadata
