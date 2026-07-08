@@ -87,6 +87,12 @@ class TestDailyIncrContent:
         content = DAILY_INCR.read_text()
         assert "TZ=Asia/Shanghai" in content
 
+    def test_daily_incr_has_step5_finance_incremental(self):
+        """Sprint 11 T3 · daily_incr.sh 包含 Step 5 parse_quarters_incremental"""
+        content = DAILY_INCR.read_text()
+        assert "Step 5" in content
+        assert "parse_quarters_incremental" in content
+
 
 class TestWeeklySyncContent:
     def test_weekly_sync_downloads_tdxfin(self):

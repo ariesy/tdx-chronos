@@ -115,6 +115,16 @@ idx_p = IndexParser.parse_all(
 )
 log.info(f"指数: ok={idx_p.parsed_ok} records={idx_p.total_records:,}")
 
+# Step 5: 增量财务解析 (Sprint 11 T3 · 跳过已 parse_ok 且 mtime 未变的 quarter)
+log.info("Step 5: 增量财务解析 → fin/parsed")
+from tdx_chronos.fin.tdxfin import TdxFinReader
+fin_summary = TdxFinReader.parse_quarters_incremental(
+    raw_dir=snap / "raw",
+    output_dir=Path("$TDX_ROOT/data/fin/parsed"),
+    db_path=Path("$DB_PATH"),
+)
+log.info(f"finance: skipped={fin_summary.skipped} parsed={fin_summary.parsed} failed={fin_summary.failed} elapsed={fin_summary.elapsed_seconds:.1f}s")
+
 # 升级 download_log: pending → success (Step 2-4 全过)
 try:
     db = MetaDB("$DB_PATH")
@@ -142,6 +152,7 @@ print(f"index_zip:  {idx_summary.success_count}/{idx_summary.success_count + idx
 print(f"K 线:       ok={fs.parsed_ok:,} failed={fs.parsed_failed}")
 print(f"股本:       ok={gp_summary.parsed_ok:,} records={gp_summary.total_records:,}")
 print(f"指数:       ok={idx_p.parsed_ok} records={idx_p.total_records:,}")
+print(f"finance:   skipped={fin_summary.skipped} parsed={fin_summary.parsed} failed={fin_summary.failed}")
 
 # Exit code: 0=全成功, 1=部分失败, 2=全失败
 total = total_success + total_failed
