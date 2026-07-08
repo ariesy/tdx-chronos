@@ -4,6 +4,27 @@
 
 ---
 
+## [v1.4.2] - 2026-07-08
+
+Sprint 11 · Incremental finance 解析 + `shareholders_history()` 新方法 · 317 → 324 tests (+7)
+
+### Added (新增)
+
+- ✨ **`MetaDB.should_skip_quarter()` + `quarter_metadata.file_mtime` 列** (`55dd5d8`) - 增量跳过判断基础
+  - `should_skip_quarter(report_date, raw_path)` → True/False
+  - `file_mtime REAL` 列跟踪原始文件 mtime; `ALTER TABLE` 幂等迁移已有 DB
+- ✨ **`TdxFinReader.parse_quarters_incremental()` 增量入口** (`b98d289`) - 跳过已 OK 的 quarter
+  - 返回 `IncrementalSummary(skipped, parsed, failed, elapsed_seconds)`
+  - 遍历 `raw_dir/gpcw*.zip` + `gpcw*.dat` → `db.should_skip_quarter()` 判断
+- ✨ **`TdxChronos.shareholders_history()` 新方法** (`ffd93dc`) - 带 filter 的股本历史
+  - 支持 `types` (type in-list filter) / `since_date` / `until_date` (YYYY-MM-DD) / `limit`
+  - PyArrow dataset filter expression + date DESC 排序 + pandas limit
+- 🔧 **`cron/daily_incr.sh` Step 5** (`21b623e`) - 增量 finance 解析
+  - 调用 `TdxFinReader.parse_quarters_incremental(snap/raw, $TDX_ROOT/data/fin/parsed, $DB_PATH)`
+  - Summary 输出 skipped/parsed/failed
+
+---
+
 ## [v1.4.1] - 2026-07-08
 
 Sprint 12 · 9 个 client 层 bug 集中修复 · 297 → 317 tests (+20)

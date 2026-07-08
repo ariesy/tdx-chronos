@@ -1,10 +1,10 @@
 # tdx-chronos
 
-> **v1.4.1 (Sprint 12 · Client Bugfixes)** · A 股离线数据仓库 · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地统一查询接口
+> **v1.4.2 (Sprint 11 · Incremental Finance + shareholders_history)** · A 股离线数据仓库 · 通达信 .day/.dat 集中下载 + Parquet 整理 + 本地统一查询接口
 
-[![Status](https://img.shields.io/badge/status-v1.4.1-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-317%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
+[![Status](https://img.shields.io/badge/status-v1.4.2-blue)]() [![Python](https://img.shields.io/badge/python-3.12-green)]() [![Tests](https://img.shields.io/badge/tests-324%20passed-brightgreen)]() [![License](https://img.shields.io/badge/license-MIT-lightgrey)]()
 
-**设计哲学**：Facade Pattern — 底层解析细节对调用方透明；Readonly-first — 所有写操作通过 `readonly=False` 显式授权；Real-data-tested — 每一行代码在真实数据上验证；No-network — 纯本地数据查询；TDD coverage — 317 tests passing。
+**设计哲学**：Facade Pattern — 底层解析细节对调用方透明；Readonly-first — 所有写操作通过 `readonly=False` 显式授权；Real-data-tested — 每一行代码在真实数据上验证；No-network — 纯本地数据查询；TDD coverage — 324 tests passing。
 
 ## 快速开始
 
@@ -21,6 +21,7 @@ df = tdx.finance("000858", report_date="2025-12-31")
 holders = tdx.shareholders("sh600000")
 index_df = tdx.index_klines("sh000001", start="2024-01-01")
 report = tdx.doctor()  # 健康检查
+df = tdx.shareholders_history("sh600000", types=[1,2,3,4], since_date="2024-01-01", limit=10)
 
 tdx.close()
 ```
@@ -115,6 +116,17 @@ df = tdx.finance("000858", report_date="2025-12-31", ratio_only=True)
 ```python
 df = tdx.shareholders("sh600000")
 # columns: code, type, date, value_1, value_2, market, type_name
+```
+
+---
+
+### `shareholders_history(symbol, types=None, since_date=None, until_date=None, limit=None) → DataFrame`
+
+股本历史（带 filter 条件）。来自 `gp/records.parquet`，按 date DESC 排序。
+
+```python
+df = tdx.shareholders_history("sh600000", types=[1, 2, 3, 4], since_date="2024-01-01", limit=10)
+# columns: type, date, value_1, value_2, market, code, symbol
 ```
 
 ---
