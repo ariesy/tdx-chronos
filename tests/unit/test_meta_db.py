@@ -436,3 +436,93 @@ def test_list_symbols_case_insensitive_market(db):
     db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
     result = db.list_symbols(market="SH")
     assert result == ["sh600000"]
+
+
+# ─── Sprint 11 T1 · should_skip_quarter + file_mtime ─────────────────────────
+
+
+class TestShouldSkipQuarter:
+    """Sprint 11 T1 · MetaDB.should_skip_quarter() 增量跳过判断"""
+
+    def test_skip_when_parse_ok_and_mtime_unchanged(self, db, tmp_path):
+        """已 parse_ok=1 + mtime 同 → skip"""
+        raw_path = tmp_path / "gpcw20260331.dat"
+        raw_path.write_bytes(b"\x00" * 100)
+        mtime = raw_path.stat().st_mtime
+
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_path),
+            file_size=100,
+            stock_count=5524,
+            parse_ok=True,
+        )
+        # Manually set file_mtime in DB (simulate previous parse)
+        conn = db._connect()
+        conn.execute(
+            "UPDATE quarter_metadata SET file_mtime = ? WHERE report_date = ?",
+            (mtime, 20260331),
+        )
+
+        result = db.should_skip_quarter(20260331, raw_path)
+        assert result is True
+
+    def test_no_skip_when_parse_ok_but_mtime_changed(self, db, tmp_path):
+        """已 parse_ok=1 + mtime 变 → 不 skip"""
+        raw_path = tmp_path / "gpcw20260331.dat"
+        raw_path.write_bytes(b"\x00" * 100)
+        old_mtime = raw_path.stat().st_mtime - 10
+
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_path),
+            file_size=100,
+            stock_count=5524,
+            parse_ok=True,
+        )
+        conn = db._connect()
+        conn.execute(
+            "UPDATE quarter_metadata SET file_mtime = ? WHERE report_date = ?",
+            (old_mtime, 20260331),
+        )
+
+        result = db.should_skip_quarter(20260331, raw_path)
+        assert result is False
+
+    def test_no_skip_when_no_db_record(self, db, tmp_path):
+        """无 DB record → 不 skip (需要 parse)"""
+        raw_path = tmp_path / "gpcw20260331.dat"
+        raw_path.write_bytes(b"\x00" * 100)
+
+        result = db.should_skip_quarter(20260331, raw_path)
+        assert result is False
+
+    def test_no_skip_when_parse_ok_is_zero(self, db, tmp_path):
+        """parse_ok=0 (之前 failed) → 不 skip (重试)"""
+        raw_path = tmp_path / "gpcw20260331.dat"
+        raw_path.write_bytes(b"\x00" * 100)
+        mtime = raw_path.stat().st_mtime
+
+        db.record_quarter_metadata(
+            report_date=20260331,
+            file_path=str(raw_path),
+            file_size=100,
+            stock_count=0,
+            parse_ok=False,
+            error="corrupt zip",
+        )
+        conn = db._connect()
+        conn.execute(
+            "UPDATE quarter_metadata SET file_mtime = ? WHERE report_date = ?",
+            (mtime, 20260331),
+        )
+
+        result = db.should_skip_quarter(20260331, raw_path)
+        assert result is False
+
+    def test_no_skip_when_raw_path_not_exists(self, db, tmp_path):
+        """raw_path 不存在 → 不 skip (留给 caller 处理)"""
+        nonexistent = tmp_path / "nonexistent.dat"
+
+        result = db.should_skip_quarter(20260331, nonexistent)
+        assert result is False

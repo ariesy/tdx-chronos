@@ -27,7 +27,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Union
 
 # Sprint 2 接受的 parse_status 取值
 PARSE_STATUS_PENDING = "pending"
@@ -91,7 +91,8 @@ class MetaDB:
         is_placeholder   INTEGER NOT NULL DEFAULT 0,  -- 164B zip 占位 flag
         parsed_at        TIMESTAMP,
         parse_ok         INTEGER NOT NULL DEFAULT 0,  -- 0/1
-        error            TEXT
+        error            TEXT,
+        file_mtime       REAL                         -- 原始文件 mtime (用于增量跳过判断)
     );
     CREATE INDEX IF NOT EXISTS idx_quarter_ok ON quarter_metadata(parse_ok);
     CREATE INDEX IF NOT EXISTS idx_quarter_placeholder ON quarter_metadata(is_placeholder);
@@ -496,10 +497,17 @@ class MetaDB:
         """创建 quarter_metadata 表 (Sprint 8 T1)
 
         Note: SCHEMA 已包含 · 保留为公开 API 以便外部调用
+        Note: 对已有 DB,使用 PRAGMA table_info 检查 file_mtime 列是否存在,不存在则 ALTER TABLE ADD (Sprint 11 T1)
         """
         conn = self._connect()
         with self._txn() as cur:
             cur.executescript(self.SCHEMA)
+        # Sprint 11 T1: 迁移已有 quarter_metadata 表 (无 file_mtime 列)
+        conn = self._connect()
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(quarter_metadata)").fetchall()}
+        if "file_mtime" not in cols:
+            with self._txn() as cur:
+                cur.execute("ALTER TABLE quarter_metadata ADD COLUMN file_mtime REAL")
 
     def record_quarter_metadata(
         self,
@@ -511,6 +519,7 @@ class MetaDB:
         is_placeholder: bool = False,
         parse_ok: bool = True,
         error: Optional[str] = None,
+        file_mtime: Optional[float] = None,
     ) -> None:
         """Upsert 1 行到 quarter_metadata
 
@@ -523,6 +532,7 @@ class MetaDB:
             is_placeholder: 164B zip 占位 (未来季未披露)
             parse_ok:       True/False
             error:          失败原因 (parse_ok=True 时 None)
+            file_mtime:     原始文件的 mtime (用于增量跳过判断)
         """
         conn = self._connect()
         now = datetime.now(timezone.utc).isoformat()
@@ -532,8 +542,8 @@ class MetaDB:
                 INSERT INTO quarter_metadata
                     (report_date, file_path, file_size, stock_count,
                      parquet_path, is_placeholder, parsed_at,
-                     parse_ok, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     parse_ok, error, file_mtime)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(report_date) DO UPDATE SET
                     file_path = excluded.file_path,
                     file_size = excluded.file_size,
@@ -542,12 +552,46 @@ class MetaDB:
                     is_placeholder = excluded.is_placeholder,
                     parsed_at = excluded.parsed_at,
                     parse_ok = excluded.parse_ok,
-                    error = excluded.error
+                    error = excluded.error,
+                    file_mtime = excluded.file_mtime
                 """,
                 (report_date, file_path, file_size, stock_count,
                  parquet_path, 1 if is_placeholder else 0, now,
-                 1 if parse_ok else 0, error),
+                 1 if parse_ok else 0, error, file_mtime),
             )
+
+    def should_skip_quarter(self, report_date: int, raw_path: Union[str, Path]) -> bool:
+        """判断 quarter 是否可跳过 (已 parse_ok 且 mtime 未变)
+
+        Args:
+            report_date: YYYYMMDD (e.g. 20260331)
+            raw_path:    原始 .dat/.zip 路径
+
+        Returns:
+            True = 跳过, False = 需要 parse
+        """
+        conn = self._connect()
+        raw_path = Path(raw_path)
+        if not raw_path.exists():
+            return False  # 文件不在,留给 caller 处理
+        file_mtime = raw_path.stat().st_mtime
+        row = conn.execute(
+            """
+            SELECT parse_ok, parsed_at, file_mtime
+            FROM quarter_metadata WHERE report_date = ?
+            """,
+            (report_date,),
+        ).fetchone()
+        if row is None:
+            return False  # 无 record,需要 parse
+        parse_ok = row["parse_ok"]
+        db_mtime = row["file_mtime"]
+        if not parse_ok:
+            return False  # 之前 failed,重试
+        # 关键: 用 file_mtime 比较,不用 parsed_at(后者是 wall clock)
+        if db_mtime is None or db_mtime < file_mtime:
+            return False  # DB 无 mtime 记录 或 mtime 变化
+        return True
 
     def get_quarters(
         self,
