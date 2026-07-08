@@ -293,6 +293,9 @@ class TdxChronos:
         df = table.to_pandas()
         if not df.empty:
             df = df.sort_values("date").reset_index(drop=True)
+            # Sprint 12 T4 · 与 kline() 契约一致 · drop symbol 列
+            if "symbol" in df.columns:
+                df = df.drop(columns=["symbol"])
         return df
 
     def list_quarters(self) -> List[str]:

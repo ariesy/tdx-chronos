@@ -629,3 +629,77 @@ def test_close_releases_db_when_readonly_true(populated_data_dir):
 
     tdx.close()
     assert tdx._db is None, "readonly=True path leaked db connection"
+
+
+# ─── Sprint 12 T4 · index_klines drop symbol ───────────────────────
+
+
+def test_index_klines_drops_symbol_column(fake_data_dir):
+    """index_klines 返回 df 不应含 symbol 列 (与 kline 一致)"""
+    from tdx_chronos.client import TdxChronos
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    idx_path = fake_data_dir / "index" / "indices.parquet"
+    pq.write_table(
+        pa.table({
+            "date": [20240102, 20240103],
+            "open": [10.0, 10.1],
+            "high": [10.5, 10.6],
+            "low": [9.8, 9.9],
+            "close": [10.2, 10.4],
+            "amount": [1e8, 1.1e8],
+            "vol": [1e7, 1.1e7],
+            "reserved": [0, 0],
+            "symbol": ["sh000001", "sh000001"],
+            "market": ["sh", "sh"],
+            "source_zip": ["shzsday.zip", "shzsday.zip"],
+            "ingested_at": ["2024-01-02T00:00:00", "2024-01-03T00:00:00"],
+            "code": ["000001", "000001"],
+            "ds_code": ["sh000001", "sh000001"],
+            "name": ["上证指数", "上证指数"],
+        }),
+        idx_path,
+    )
+
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.index_klines("sh000001", start="2024-01-01", end="2024-12-31")
+        assert "symbol" not in df.columns, f"symbol should be dropped, got: {list(df.columns)}"
+        # 元信息列保留
+        assert "market" in df.columns
+        assert "code" in df.columns
+        assert "ds_code" in df.columns
+        assert "name" in df.columns
+    finally:
+        tdx.close()
+
+
+def test_index_klines_preserves_metadata_columns(fake_data_dir):
+    """index_klines 保留 market/code/ds_code/name 元信息列 (P1 决策)"""
+    from tdx_chronos.client import TdxChronos
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    idx_path = fake_data_dir / "index" / "indices.parquet"
+    pq.write_table(
+        pa.table({
+            "date": [20240102],
+            "open": [10.0], "high": [10.5], "low": [9.8], "close": [10.2],
+            "amount": [1e8], "vol": [1e7], "reserved": [0],
+            "symbol": ["sh000001"], "market": ["sh"],
+            "source_zip": ["shzsday.zip"], "ingested_at": ["2024-01-02"],
+            "code": ["000001"], "ds_code": ["sh000001"], "name": ["上证指数"],
+        }),
+        idx_path,
+    )
+
+    tdx = TdxChronos(data_dir=fake_data_dir, readonly=False)
+    try:
+        df = tdx.index_klines("sh000001", start="2024-01-01")
+        assert "code" in df.columns
+        assert "ds_code" in df.columns
+        assert "name" in df.columns
+        assert "market" in df.columns
+    finally:
+        tdx.close()
