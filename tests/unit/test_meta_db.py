@@ -340,3 +340,55 @@ class TestQuarterMetadata:
         ).fetchone()
         assert row["stock_count"] == 5524
         assert row["file_size"] == 12_960_000
+
+
+# ---------------------------------------------------------------------
+# TestStaleSHMRecovery (Sprint 11 T9 · TDD)
+# ---------------------------------------------------------------------
+
+class TestStaleSHMRecovery:
+    """Sprint 11 T9 · MetaDB._clean_stale_wal_files() 防御性清理
+
+    根因: Sprint 10 集成测试期间 umask 0o277 创建了 400-permission
+    meta.db-shm · 导致后续 WAL mmap 失败报 'readonly database'
+    """
+
+    def test_stale_shm_with_mode_400_is_removed(self, tmp_path):
+        """stale 400-permission SHM 自动删除"""
+        import os
+        db_path = tmp_path / "meta.db"
+        shm = tmp_path / "meta.db-shm"
+        shm.write_bytes(b"\x00" * 1024)
+        os.chmod(shm, 0o400)
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        rid = db.record_download("test.zip", "test.tdx", 100, "abc", "pending", None)
+        assert rid > 0
+        db.close()
+        # 验证 SHM 已被 SQLite 重建为正常权限 (≥ 0o600) 或被 _clean_stale_wal_files 删了
+        if shm.exists():
+            assert (shm.stat().st_mode & 0o777) >= 0o600, f"SHM mode={oct(shm.stat().st_mode & 0o777)}"
+
+    def test_empty_wal_with_no_shm_is_removed(self, tmp_path):
+        """0 字节 WAL + 无 SHM 自动删除"""
+        db_path = tmp_path / "meta.db"
+        wal = tmp_path / "meta.db-wal"
+        wal.write_bytes(b"")
+        assert wal.exists() and wal.stat().st_size == 0
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        db.close()
+        assert not wal.exists(), f"WAL should be removed, but exists with size {wal.stat().st_size}"
+
+    def test_record_download_after_stale_shm_recovery(self, tmp_path):
+        """完整场景: stale SHM → MetaDB → record_download PASS"""
+        import os
+        db_path = tmp_path / "meta.db"
+        shm = tmp_path / "meta.db-shm"
+        shm.write_bytes(b"\x00" * 1024)
+        os.chmod(shm, 0o400)
+        db = MetaDB(str(db_path))
+        db.init_schema()
+        rid = db.record_download("recovered.zip", "test.tdx", 100, "abc", "pending", None)
+        assert rid > 0
+        db.close()

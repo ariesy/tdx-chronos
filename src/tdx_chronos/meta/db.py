@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -104,6 +105,36 @@ class MetaDB:
     # Connection mgmt
     # ---------------------------------------------------------------------
 
+    def _clean_stale_wal_files(self) -> None:
+        """检测并清理 stale SQLite WAL/SHM 残留
+
+        Sprint 10 集成测试期间,某次 sqlite3.connect() 在 umask 0o277 环境
+        下创建了 400 权限 (-r--------) 的 meta.db-shm · owner 也不能写 ·
+        下次 SQLite WAL 模式启动时 mmap 失败报 'attempt to write a readonly database'
+
+        规则:
+        - SHM 文件存在且权限 < 0o600 (owner 不可写) → 删 (SQLite 会重建)
+        - WAL 文件存在且 0 字节 + 同目录无 SHM → 删 (stale,安全)
+        - WAL 非 0 字节 → 保留 (可能含未提交事务,不碰)
+        - :memory: DB → 跳过
+        """
+        import os
+        if str(self.db_path) == ":memory:":
+            return
+        base = self.db_path.name
+        parent = self.db_path.parent
+        shm = parent / (base + "-shm")
+        wal = parent / (base + "-wal")
+        if shm.exists() and (shm.stat().st_mode & 0o777) < 0o600:
+            logging.warning(
+                "Removing stale SHM (mode=%04o): %s",
+                shm.stat().st_mode & 0o777, shm,
+            )
+            shm.unlink()
+        # 0 字节 WAL + SHM 已删 → 一定是 stale
+        if wal.exists() and wal.stat().st_size == 0 and not shm.exists():
+            wal.unlink()
+
     def _connect(self) -> sqlite3.Connection:
         """Get (or create) the long-lived SQLite connection.
 
@@ -113,6 +144,7 @@ class MetaDB:
         - 默认 isolation_level (deferred · autocommit=False 隐式开事务)
           + 手动 BEGIN/COMMIT/ROLLBACK 控制点
         """
+        self._clean_stale_wal_files()  # ← Sprint 11 T9 hotfix
         if self._conn is None:
             if str(self.db_path) != ":memory:":
                 Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
