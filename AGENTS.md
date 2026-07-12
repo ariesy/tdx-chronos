@@ -1,7 +1,7 @@
 # AGENTS.md · tdx-chronos
 
 > A-share offline data warehouse. Pulls 通达信 `.day` / `.dat` / `.zip` → Parquet → exposes a read-only `TdxChronos` facade.
-> v1.4.0 (Sprint 10, Query Facade) · Python 3.12 · 297 tests.
+> v1.4.3 (Sprint 13, ETF 显式化) · Python 3.12 · 330 tests.
 
 ---
 
@@ -13,7 +13,7 @@
 .venv/bin/pip install -e ".[dev]"     # adds pytest-cov
 
 # Run the full suite
-.venv/bin/pytest tests/               # ~120s, all 297 tests; full suite routinely times out at 120s, use no timeout or run in background
+.venv/bin/pytest tests/               # ~120s, all 330 tests; full suite routinely times out at 120s, use no timeout or run in background
 
 # Run a single test file
 .venv/bin/pytest tests/unit/test_client.py -v
@@ -67,8 +67,8 @@ logs/                    # sprint reports + cron logs (cron/ subdir gitignored)
 1. **Do not edit `vendor/mootdx/`** — it is vendored from upstream 0.11.7 with 4 known bugs. Record workarounds in `vendor/UPGRADE_NOTES.md`; do not patch the vendor copy. Refresh via `python -m vendoring sync vendor/mootdx/`.
 2. **Do not `import mootdx.financial`** — that file is 0 bytes in 0.11.7 and ImportError's. Use `tdx_chronos.sources.financial` / `tdx_chronos.fin.tdxfin` instead (struct-based, 264-field record format).
 3. **Do not commit `data/`** — `.gitignore` excludes the whole tree except `data/research/`. New ad-hoc samples belong there.
-4. **Do not remove or skip tests to make CI green** — the 229→297 count is the canonical regression baseline (see `CHANGELOG.md`).
-5. **Do not import `TdxChronos` from the package root** — see the "Footguns" section below. The README is wrong on this point.
+4. **Do not remove or skip tests to make CI green** — the 324→330 count is the canonical regression baseline (see `CHANGELOG.md`).
+5. **Do not import `TdxChronos` from the package root** — actually false as of Sprint 11 T6; `from tdx_chronos import TdxChronos` now works. Use either form. (This hard-rule is kept for historical context.)
 
 ---
 
@@ -84,15 +84,16 @@ index/             # indices.parquet
 meta/              # meta.db (SQLite · symbol_metadata + download_log)
 ```
 
-9 public methods, all read-only unless `readonly=False`:
+10 public methods (Sprint 13 加 `list_etfs`), all read-only unless `readonly=False`:
 
 | method | source file | purpose |
 |---|---|---|
 | `symbol_info(symbol)` | `client.py` | metadata dict or `{}` (never raises) |
-| `list_symbols(market=None)` | `client.py` | sorted ASC; market in `sh`/`sz`/`bj` |
-| `kline(symbol, start, end, columns=None)` | `client.py` | pyarrow predicate pushdown + column projection |
-| `finance(symbol, report_date, ratio_only)` | `client.py` | 1 quarter if `report_date` set, else all |
-| `shareholders(symbol)` | `client.py` | filter `gp/records.parquet` by `code` |
+| `list_symbols(market=None)` | `client.py` | sorted ASC; market in `sh`/`sz`/`bj`; **含全部场内基金/可转债** |
+| `list_etfs(market=None)` 🆕 | `client.py` | 仅场内基金/ETF/LOF/REITs/可转债 (代码段过滤) |
+| `kline(symbol, start, end, columns=None)` | `client.py` | pyarrow predicate pushdown + column projection; **支持 ETF/可转债** |
+| `finance(symbol, report_date, ratio_only)` | `client.py` | 1 quarter if `report_date` set, else all; **ETF 返回空 DataFrame** |
+| `shareholders(symbol)` | `client.py` | filter `gp/records.parquet` by `code`; **支持 ETF (tdxgp.zip 含)** |
 | `index_klines(index_code, start, end)` | `client.py` | filter `index/indices.parquet` |
 | `list_quarters()` | `client.py` | **DESC by date** (newest first) |
 | `doctor()` | `client.py` | wraps `Doctor().run()` |
@@ -108,12 +109,14 @@ Symbol normalization (`_normalize_symbol`): bare 6-digit codes get prefixed — 
 
 | Claim in README | Reality |
 |---|---|
-| `from tdx_chronos import TdxChronos` | `__init__.py` only exports `__version__` / `__author__`. Use `from tdx_chronos.client import TdxChronos`. |
+| `from tdx_chronos import TdxChronos` | `__init__.py` only exports `__version__` / `__author__`. **But** Sprint 11 T6 fix added a re-export — both forms now work. |
 | `pip install -e .` works | It does, but it does **not** register vendored deps. Always run with `PYTHONPATH=src:vendor/_vendor` for ad-hoc invocations. |
 | `gp/records.parquet` size | ~120M records, ~588 MB. Filtering on `code` uses pyarrow predicate pushdown — do not load then filter in pandas. |
 | `list_quarters()` order | **DESC** (newest first), not ASC. The docstring says so; the name does not. |
 | `date` column type in K-line | Stored as `int` `YYYYMMDD` (e.g. `20240102`), not `datetime`. `_to_yyyymmdd_int` accepts both `'2024-01-02'` and `'20240102'`. |
 | `data/meta/meta.db-shm` exists | Yes, WAL mode. If a previous run left it with mode `<0o600` (umask 0o277 reproducer), SQLite throws "attempt to write a readonly database". `MetaDB._connect()` calls `_clean_stale_wal_files()` to auto-recover (Sprint 11 hotfix). |
+| **`finance(symbol)` 适用于所有标的** | **错**。`tdxfin.zip` 仅含 A 股; 对场内基金 / ETF / LOF / REITs / 可转债调用会返回空 DataFrame 而非报错。判断方法: 先看 `symbol_info()['source_zip']=='tdxfin.zip'?`，否者改用 tushare `fund_basic`。 |
+| **`list_symbols()` 不含 ETF** | **错**。12,279 symbols 中约 1,121+ 只是 ETF (sh510/511/512/513/588 + sz159),再叠加 ~777 LOF + 61 REITs + ~1,072 可转债,占总量 ~20%。要精准过滤用 `list_etfs(market=...)`。 |
 
 ---
 

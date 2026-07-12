@@ -20,11 +20,23 @@ import pyarrow.parquet as pq
 class TdxChronos:
     """5 类离线数据统一 facade · data_dir 必传 (零数据拷贝)
 
+    覆盖范围 (Sprint 13 明确化):
+      - A 股 (sh6/sz0/sz3/bj4/bj8/bj92) — 日 K + 财务 + 股本
+      - **场内基金 / ETF / LOF / REITs / 封闭基金** (sh5/sh1/sz1 部分) — 日 K + 股本
+      - **可转债** (sh11/sh12/sz12 部分) — 日 K + 股本
+      - 上证/深证主要指数 (sh000xxx/sz399xxx) — 日 K
+
     Args:
         data_dir: 必传 · 数据根目录
 
     Attributes:
         data_dir: Path (resolved)
+
+    ETF/基金 使用提示:
+      - 取列表:  ``list_etfs()`` 或 ``list_etfs(market='sh')``
+      - 取日 K:  ``kline('sh510050', '2024-01-01', '2024-12-31')``  (与个股同 API)
+      - 取股本:  ``shareholders('sh510050')`` (含 ETF)
+      - 取财务:  ``finance('sh510050')`` → **空 DataFrame** (tdxfin.zip 不含基金)
     """
 
     SUBDIRS_REQUIRED = [
@@ -121,9 +133,57 @@ class TdxChronos:
 
         Returns:
             List[str] · sorted by symbol ASC
+
+        Note:
+            返回**全部**标的,含 A 股 + 场内基金 (含 ETF) + 可转债 + REITs + 指数。
+            若仅需 ETF/基金/可转债, 用 ``list_etfs(market=...)`` 更精准。
         """
         db = self._ensure_db()
         return db.list_symbols(market)
+
+    def list_etfs(self, market: Optional[str] = None) -> List[str]:
+        """list 场内基金 / ETF / LOF / REITs / 可转债 symbols
+
+        适合 ETF Beta 跟踪 / 行业 ETF 筛选 / 跨境 ETF 拉数据等场景。
+
+        Args:
+            market: 'sh'/'sz' filter · None=全部 (忽略 bj, 北交所无场内基金)
+
+        Returns:
+            List[str] · sorted by symbol ASC
+
+        代码段规则 (通达信/SSE/SZSE 公开代码分配):
+            sh5xxxxx — 沪市基金
+                - 50xxxx : 老封闭式基金 (1998-1999 上市, 如 sh500001 基金金泰)
+                - 51xxxx : ETF (510/511/512/513/515/518 跨/单/跨境/主题/行业)
+                - 56xxxx : 沪市 LOF
+                - 58xxxx : 科创板 ETF (588xxx)
+            sh1xxxxx — 沪市可转债 (110-113 段)
+            sz15xxxx (=sz159xxx) — **深市 ETF** (创业板/沪深300/恒生等)
+            sz16xxxx — 深市 LOF
+            sz18xxxx — 深市 **公募 REITs** (基础设施证券投资基金)
+            sz12xxxx — 深市可转债 (123/127/128 段)
+
+        数据可用性 (Sprint 13 验证):
+            ✅ 日 K 线 (来自 hsjday.zip · 12,279 symbols 全覆盖)
+            ✅ 股本变动 (来自 tdxgp.zip · 7,573 symbols 含场内基金)
+            ❌ 财务三表 (tdxfin.zip 仅 A 股, 调用 finance() 返回空 DataFrame)
+
+        Example:
+            >>> etfs = tdx.list_etfs()
+            >>> 'sh510050' in etfs  # 50ETF
+            True
+            >>> 'sz159915' in etfs  # 创业板ETF
+            True
+            >>> sh_etfs = tdx.list_etfs(market='sh')
+            >>> df = tdx.kline('sh510050', start='2024-01-01')
+        """
+        db = self._ensure_db()
+        if market is None:
+            all_syms = db.list_symbols()
+        else:
+            all_syms = db.list_symbols(market)
+        return [s for s in all_syms if _is_fund_or_bond(s)]
 
     # ─── Task 4: kline (pyarrow predicate pushdown) ──────────────────────────
 
@@ -136,15 +196,22 @@ class TdxChronos:
     ) -> pd.DataFrame:
         """K 线 · 单 symbol · pandas DataFrame (sorted by date ASC)
 
+        支持 A 股 / 场内基金 (含 ETF / LOF) / 可转债 / 指数 — 来自 hsjday.zip 全覆盖。
+
         Args:
-            symbol: 'sh600000' / 'sz000001' / 'bj838000'
+            symbol: 'sh600000' / 'sz000001' / 'bj838000' / 'sh510050' (50ETF) / 'sz159915' (创业板ETF)
             start:  起始日期 (inclusive) · 'YYYY-MM-DD' or 'YYYYMMDD'
             end:    截止日期 (inclusive)
             columns:  子集 columns · None=全部
 
         Returns:
-            DataFrame [date, open, high, low, close, volume, amount]
+            DataFrame [date, open, high, low, close, volume, amount, market, ...]
             找不到返回 empty DataFrame (不 raise)
+
+        ETF/基金 示例:
+            >>> df = tdx.kline('sh510050', start='2024-01-01')   # 50ETF
+            >>> df = tdx.kline('sz159915', start='2024-01-01')   # 创业板ETF
+            >>> df = tdx.kline('sh588200', start='2024-01-01')   # 科创50ETF
         """
         norm = _normalize_symbol(symbol)
         if start and end and _to_yyyymmdd_int(start) > _to_yyyymmdd_int(end):
@@ -193,6 +260,11 @@ class TdxChronos:
 
         Returns:
             DataFrame 每行 = 1 个 (symbol, quarter) · 找不到返回 empty DataFrame
+
+        Note:
+            **ETF / 场内基金 / 可转债不在 tdxfin.zip 范围内**, 调用本方法对 ETF 代码
+            会直接返回 **空 DataFrame** (非错误)。ETF 财务数据需走 tushare `fund_basic`
+            或类似第三方源补全 — 见 POC `decision.md` Phase 1.5。
         """
         norm = _normalize_symbol(symbol)
         bare = norm[2:] if norm.startswith(("sh", "sz", "bj")) else norm
@@ -232,10 +304,14 @@ class TdxChronos:
         """股本 · 按 symbol 过滤
 
         Args:
-            symbol: 'sh600000'
+            symbol: 'sh600000' 或 'sh510050' (50ETF, 场内基金同样在 tdxgp.zip 范围内)
 
         Returns:
             DataFrame (可能 empty) · 不 raise · 找不到返回 empty DataFrame
+
+        Note:
+            支持 **A 股 + 场内基金 (含 ETF) + 可转债**,全部从 tdxgp.zip 解析。
+            实测 sh510050 有 ~2000 行 type=25 股本变动 records。
         """
         norm = _normalize_symbol(symbol)
         bare = norm[2:] if norm.startswith(("sh", "sz", "bj")) else norm
@@ -389,6 +465,28 @@ def _normalize_symbol(symbol: str) -> str:
         if s.startswith(("4", "8")):
             return "bj" + s
     return s
+
+
+def _is_fund_or_bond(symbol: str) -> bool:
+    """判定 symbol 是否属于场内基金 / ETF / LOF / REITs / 可转债
+
+    基于通达信 / SSE / SZSE 公开代码分配规则 (Sprint 13 验证):
+      - sh5xxxxx → 沪市基金 (老封基 50x + ETF 51x + LOF 56x + 科创 ETF 588x)
+      - sh1xxxxx → 沪市可转债 (110-113 段)
+      - sz15xxxx (=sz159xxx) → 深市 ETF
+      - sz16xxxx → 深市 LOF
+      - sz18xxxx → 深市 REITs
+      - sz12xxxx → 深市可转债 (123/127/128 段)
+
+    Returns:
+        True = 场内基金/可转债家族, False = A 股/指数/其他
+    """
+    s = symbol.lower()
+    if s.startswith(("sh5", "sh1")):
+        return True
+    if s.startswith("sz1"):
+        return True
+    return False
 
 
 def _to_yyyymmdd_int(s: str) -> int:

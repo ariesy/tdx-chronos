@@ -4,6 +4,44 @@
 
 ---
 
+## [v1.4.3] - 2026-07-10
+
+Sprint 13 · ETF 显式化 · 把"数据层完整、产品层零声明"的隐式 ETF 能力变成 first-class API · 324 → 330 tests (+6)
+
+### Added (新增)
+
+- ✨ **`TdxChronos.list_etfs(market=None)` 新方法** - 列出全部场内基金 / ETF / LOF / REITs / 可转债
+  - 基于通达信 / SSE / SZSE 公开代码段规则过滤: `sh5xxxxx` + `sh1xxxxx` + `sz15xxxxx` + `sz16xxxxx` + `sz18xxxxx` + `sz12xxxxx`
+  - 实测覆盖 1,121+ 只 ETF (sh510/511/512/513/588 + sz159) + ~777 LOF + 61 REITs + ~1,072 可转债
+  - 支持 `market='sh'` / `market='sz'` 过滤; `market='bj'` 返回空 (北交所无场内基金)
+- ✨ **`_is_fund_or_bond(symbol)` 内部 helper** - 代码段判定,纯 Python,~12K symbols 过滤微秒级
+
+### Changed (变更)
+
+- 📚 **client.py 类 docstring** - 显式列出 5 类覆盖范围 (A 股 / 场内基金 / 可转债 / 指数) + ETF 使用 4 行提示
+- 📚 **`list_symbols` docstring** - 注明返回值含 ETF/可转债, 指向 `list_etfs()` 精准查询
+- 📚 **`kline` docstring** - 注明支持 ETF/LOF/可转债/指数; 新增 3 个 ETF 调用示例 (sh510050/sz159915/sh588200)
+- 📚 **`finance` docstring** - 注明 ETF/场内基金/可转债不在 tdxfin.zip,调用返回空 DataFrame
+- 📚 **`shareholders` docstring** - 注明支持场内基金 (tdxgp.zip 含),实测 sh510050 ~2000 行股本变动
+- 📚 **README.md** - Quick Start 增加 ETF 调用段; 新增 `list_etfs()` API Reference 含代码段速查表; Sprint 表新增 Sprint 13
+- 🔖 版本号: v1.4.2 → v1.4.3 (pyproject.toml + __init__.py + README.md 同步)
+
+### Test Summary
+
+| Sprint | 新增 | 累计 | 累计时间 |
+|---|---:|---:|---:|
+| 13 | 6 | **330** | ~218s |
+
+新增 6 测试 (`tests/unit/test_client.py`):
+- `test_is_fund_or_bond_classification` - 代码段判定全覆盖 (ETF/LOF/REITs/可转债/A 股/B 股/指数/北交所)
+- `test_list_etfs_all` - 默认返回全部场内基金/可转债,排除 A 股/北交所
+- `test_list_etfs_by_market_sh` - market='sh' 仅沪市
+- `test_list_etfs_by_market_sz` - market='sz' 仅深市
+- `test_list_etfs_empty_when_no_funds` - 全 A 股 → 空 list
+- `test_list_etfs_excludes_bj` - 排除北交所 (无场内基金)
+
+---
+
 ## [v1.4.2] - 2026-07-08
 
 Sprint 11 · Incremental finance 解析 + `shareholders_history()` 新方法 · 317 → 324 tests (+7)

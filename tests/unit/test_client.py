@@ -953,3 +953,169 @@ def test_tdx_chronos_exported_from_top_level():
     from tdx_chronos import TdxChronos as TopLevel
     from tdx_chronos.client import TdxChronos as FromClient
     assert TopLevel is FromClient, "Top-level TdxChronos 应与 tdx_chronos.client.TdxChronos 是同一 class"
+
+
+# ─── Sprint 13 · ETF 显式化 (list_etfs + _is_fund_or_bond) ──────────────────
+
+
+def test_is_fund_or_bond_classification():
+    """_is_fund_or_bond 代码段判定: 含 ETF/LOF/REITs/可转债, 排除 A 股/指数"""
+    from tdx_chronos.client import _is_fund_or_bond
+
+    # 沪市基金
+    assert _is_fund_or_bond("sh500001") is True   # 老封闭式基金
+    assert _is_fund_or_bond("sh510050") is True   # 50ETF
+    assert _is_fund_or_bond("sh510300") is True   # 沪深300ETF
+    assert _is_fund_or_bond("sh511010") is True   # 国债ETF
+    assert _is_fund_or_bond("sh512760") is True   # 芯片ETF
+    assert _is_fund_or_bond("sh513500") is True   # 标普500ETF
+    assert _is_fund_or_bond("sh588200") is True   # 科创50ETF
+    assert _is_fund_or_bond("sh560500") is True   # LOF
+    # 沪市可转债
+    assert _is_fund_or_bond("sh110001") is True   # 可转债
+    assert _is_fund_or_bond("sh113001") is True   # 可转债
+    # 深市 ETF
+    assert _is_fund_or_bond("sz159915") is True   # 创业板ETF
+    assert _is_fund_or_bond("sz159949") is True   # 创业板50ETF
+    # 深市 LOF + REITs
+    assert _is_fund_or_bond("sz160105") is True   # LOF
+    assert _is_fund_or_bond("sz180101") is True   # 公募REITs
+    # 深市可转债
+    assert _is_fund_or_bond("sz123001") is True   # 可转债
+    assert _is_fund_or_bond("sz127001") is True   # 可转债
+    assert _is_fund_or_bond("sz128001") is True   # 可转债
+
+    # 不属于场内基金/可转债: A 股 + B 股 + 指数 + 北交所
+    assert _is_fund_or_bond("sh600519") is False  # 贵州茅台 (A股)
+    assert _is_fund_or_bond("sh600036") is False  # 招商银行 (A股)
+    assert _is_fund_or_bond("sz000001") is False  # 平安银行 (A股)
+    assert _is_fund_or_bond("sz300750") is False  # 宁德时代 (创业板)
+    assert _is_fund_or_bond("sh688981") is False  # 中芯国际 (科创板)
+    assert _is_fund_or_bond("bj838000") is False  # 北交所
+    assert _is_fund_or_bond("bj920001") is False  # 北交所新股
+    assert _is_fund_or_bond("sh000001") is False  # 上证指数
+    assert _is_fund_or_bond("sh900901") is False  # B 股
+
+
+def test_list_etfs_all(populated_data_dir):
+    """list_etfs() 默认 = 全部场内基金/可转债 (含 sh5 + sh1 + sz1)"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")     # A 股
+    db.record_symbol("sh510050", "sh", 20050223, 5000, "hsjday.zip")     # 50ETF
+    db.record_symbol("sh510300", "sh", 20120528, 3000, "hsjday.zip")     # 沪深300ETF
+    db.record_symbol("sh588200", "sh", 20221026, 800, "hsjday.zip")      # 科创50ETF
+    db.record_symbol("sh110001", "sh", 20100115, 2000, "hsjday.zip")     # 沪可转债
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")     # A 股
+    db.record_symbol("sz159915", "sz", 20111209, 3500, "hsjday.zip")     # 创业板ETF
+    db.record_symbol("sz160105", "sz", 20100115, 2000, "hsjday.zip")     # LOF
+    db.record_symbol("sz180101", "sz", 20210607, 500, "hsjday.zip")      # REITs
+    db.record_symbol("sz123001", "sz", 20100115, 2000, "hsjday.zip")     # 深可转债
+    db.record_symbol("bj838000", "bj", 20200101, 1000, "hsjday.zip")     # 北交所
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        etfs = tdx.list_etfs()
+        # 6 只场内基金/可转债 (排除 sh600000/sz000001/bj838000)
+        assert "sh510050" in etfs
+        assert "sh510300" in etfs
+        assert "sh588200" in etfs
+        assert "sh110001" in etfs
+        assert "sz159915" in etfs
+        assert "sz160105" in etfs
+        assert "sz180101" in etfs
+        assert "sz123001" in etfs
+        # A 股/北交所不在
+        assert "sh600000" not in etfs
+        assert "sz000001" not in etfs
+        assert "bj838000" not in etfs
+        # sorted ASC
+        assert etfs == sorted(etfs)
+        assert len(etfs) == 8
+    finally:
+        tdx.close()
+
+
+def test_list_etfs_by_market_sh(populated_data_dir):
+    """list_etfs(market='sh') 仅返回沪市场内基金/可转债"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh510050", "sh", 20050223, 5000, "hsjday.zip")
+    db.record_symbol("sh110001", "sh", 20100115, 2000, "hsjday.zip")
+    db.record_symbol("sz159915", "sz", 20111209, 3500, "hsjday.zip")
+    db.record_symbol("sz123001", "sz", 20100115, 2000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        sh_etfs = tdx.list_etfs(market="sh")
+        assert sh_etfs == ["sh110001", "sh510050"]  # sorted ASC
+        assert all(s.startswith("sh") for s in sh_etfs)
+    finally:
+        tdx.close()
+
+
+def test_list_etfs_by_market_sz(populated_data_dir):
+    """list_etfs(market='sz') 仅返回深市 ETF/LOF/REITs/可转债"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh510050", "sh", 20050223, 5000, "hsjday.zip")
+    db.record_symbol("sz159915", "sz", 20111209, 3500, "hsjday.zip")
+    db.record_symbol("sz180101", "sz", 20210607, 500, "hsjday.zip")
+    db.record_symbol("sz123001", "sz", 20100115, 2000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        sz_etfs = tdx.list_etfs(market="sz")
+        assert sz_etfs == ["sz123001", "sz159915", "sz180101"]  # sorted ASC
+        assert all(s.startswith("sz") for s in sz_etfs)
+    finally:
+        tdx.close()
+
+
+def test_list_etfs_empty_when_no_funds(populated_data_dir):
+    """全是 A 股 → list_etfs 返回空 list"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh600000", "sh", 19991110, 5000, "hsjday.zip")
+    db.record_symbol("sz000001", "sz", 19910403, 8000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        assert tdx.list_etfs() == []
+        assert tdx.list_etfs(market="sh") == []
+        assert tdx.list_etfs(market="sz") == []
+    finally:
+        tdx.close()
+
+
+def test_list_etfs_excludes_bj(populated_data_dir):
+    """list_etfs() 排除 bj 市场 (北交所无场内基金)"""
+    from tdx_chronos.client import TdxChronos
+    from tdx_chronos.meta.db import MetaDB
+
+    db = MetaDB(str(populated_data_dir / "meta" / "meta.db"))
+    db.record_symbol("sh510050", "sh", 20050223, 5000, "hsjday.zip")
+    db.record_symbol("bj838000", "bj", 20200101, 1000, "hsjday.zip")
+    db.close()
+
+    tdx = TdxChronos(data_dir=populated_data_dir, readonly=False)
+    try:
+        etfs = tdx.list_etfs()
+        assert "sh510050" in etfs
+        assert "bj838000" not in etfs
+        # list_etfs(market='bj') 显式也是空
+        assert tdx.list_etfs(market="bj") == []
+    finally:
+        tdx.close()
