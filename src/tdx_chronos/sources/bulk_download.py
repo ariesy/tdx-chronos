@@ -20,20 +20,105 @@
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple, Type
 from urllib.parse import urljoin
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+# Sprint 14 · Condition-based retry policy
+# (incident: 2026-07-14 ENOSPC retry 空转 5 zip × 3 次 × 5-15s = 数分钟浪费)
+DEFAULT_TRANSIENT_EXCEPTIONS: Tuple[Type[Exception], ...] = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+DEFAULT_TERMINAL_EXCEPTIONS: Tuple[Type[Exception], ...] = (
+    KeyboardInterrupt,
+    PermissionError,
+)
+
+
+@dataclass
+class RetryPolicy:
+    """Condition-based retry policy for bulk_download.
+
+    **Sprint 14 motivation**: previous behavior retried on *every* exception up
+    to ``max_retries`` times. For terminal conditions (ENOSPC, 404, KeyboardInterrupt)
+    this wastes seconds-to-minutes per zip × 5 zips = minutes of pointless sleep.
+
+    New behavior:
+      * **Transient** exceptions (network glitch, server 5xx) → retry with backoff
+      * **Terminal** exceptions (ENOSPC / ENOMEM / 4xx / auth) → fail-fast, 0 retry
+      * Errors not in either set fall through to default retry behavior (backwards compat)
+
+    Args:
+        max_retries:        max transient retry count (default 3)
+        backoff_schedule:   sleep seconds between retries; len(max_retries) recommended
+        transient_exceptions: tuple of exception classes that trigger retry
+        terminal_exceptions:  tuple of exception classes that skip retry and fail
+        terminal_os_errno:    specific ``OSError.errno`` values that are terminal
+                              (default: ENOSPC, ENOMEM, EROFS — never self-heal)
+    """
+
+    max_retries: int = 3
+    backoff_schedule: Tuple[float, ...] = (5.0, 10.0, 15.0)
+    transient_exceptions: Tuple[Type[Exception], ...] = field(
+        default_factory=lambda: DEFAULT_TRANSIENT_EXCEPTIONS,
+    )
+    terminal_exceptions: Tuple[Type[Exception], ...] = field(
+        default_factory=lambda: DEFAULT_TERMINAL_EXCEPTIONS,
+    )
+    terminal_os_errno: Tuple[int, ...] = (
+        errno.ENOSPC,
+        errno.ENOMEM,
+        errno.EROFS,
+        errno.EFBIG,
+    )
+
+    def classify(self, exc: Exception) -> str:
+        """Return one of: ``'terminal'``, ``'transient'``, ``'unknown'``.
+
+        Unknown errors fall back to legacy retry behavior (treated as transient)
+        for backward compat — operators can override policy to tighten this.
+
+        Order matters: explicit terminal first, then requests HTTPError (which
+        is itself a subclass of OSError — must check before generic OSError),
+        then plain OSError by errno, then explicit transient.
+        """
+        # Explicit terminal types first
+        for cls in self.terminal_exceptions:
+            if isinstance(exc, cls):
+                return "terminal"
+        # requests HTTPError BEFORE generic OSError (HTTPError <: OSError in mro)
+        if isinstance(exc, requests.exceptions.HTTPError):
+            resp = getattr(exc, "response", None)
+            if resp is not None and getattr(resp, "status_code", 500) < 500:
+                return "terminal"
+            return "transient"
+        # Generic OSError with specific errno
+        if isinstance(exc, OSError):
+            if exc.errno in self.terminal_os_errno:
+                return "terminal"
+            # Other OSError (EIO, etc.) → transient (may be I/O flake)
+            return "transient"
+        # Explicit transient
+        for cls in self.transient_exceptions:
+            if isinstance(exc, cls):
+                return "transient"
+        return "unknown"
 
 
 # 5 个核心 zip（v1.1 主路径）—— 指数 5 个 zip 在 Sprint 4b/Sprint 5 cron 加
@@ -169,6 +254,7 @@ class BulkDownloader:
         zip_spec: dict,
         snap_dir: Path,
         max_retries: int = 3,
+        retry_policy: Optional[RetryPolicy] = None,
     ) -> ZipResult:
         """下载 1 个 zip · 包级重试 max_retries 次
 
@@ -176,20 +262,32 @@ class BulkDownloader:
             zip_spec:   DEFAULT_ZIPS 的元素 · {name, url, approx_size, contains}
             snap_dir:   输出顶层 · $snap_dir/$name.zip 落盘
             max_retries: 最大重试 (默认 3 · 委员会 P0 #3 化解)
+            retry_policy: Optional RetryPolicy (Sprint 14) · None = default
+                          RetryPolicy(max_retries=max_retries).
 
         Returns:
             ZipResult · 含 status='success' / 'failed'
+
+        Behavior (Sprint 14 condition-based retry):
+          * Terminal errors (ENOSPC, ENOMEM, 4xx, KeyboardInterrupt, PermissionError)
+            → fail immediately with retry_count=0
+          * Transient errors (ConnectionError, Timeout, 5xx) → retry up to
+            ``max_retries`` with backoff
+          * Unknown errors fall back to legacy retry behavior
         """
         name = zip_spec["name"]
         url = zip_spec["url"]
         out_path = snap_dir / f"{name}.zip"
         snap_dir.mkdir(parents=True, exist_ok=True)
 
+        if retry_policy is None:
+            retry_policy = RetryPolicy(max_retries=max_retries)
+
         start = time.monotonic()
         retry_count = 0
         last_error = None
 
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(1, retry_policy.max_retries + 1):
             try:
                 size, sha = self._download_with_resume(
                     url, out_path, zip_spec["approx_size"],
@@ -208,15 +306,28 @@ class BulkDownloader:
                     error=None,
                 )
             except Exception as exc:
+                classification = retry_policy.classify(exc)
                 last_error = str(exc)
+
+                if classification == "terminal":
+                    logger.error(
+                        "Terminal error %s (no retry, errno=%s): %s",
+                        name, getattr(exc, "errno", None), exc,
+                    )
+                    # 立即失败, 不等 backoff, 不计入 retry count
+                    retry_count = 0
+                    last_error = f"terminal: {last_error}"
+                    break
+
                 retry_count = attempt - 1
                 logger.warning(
-                    "Failed %s attempt %d/%d: %s",
-                    name, attempt, max_retries, exc,
+                    "Failed %s attempt %d/%d (classification=%s): %s",
+                    name, attempt, retry_policy.max_retries, classification, exc,
                 )
-                # 退避 · 第 1 次失败等 5s · 第 2 次 15s · 第 3 次 30s
-                if attempt < max_retries:
-                    time.sleep(5 * attempt)
+                # 退避: 第 N 次失败 backoff_schedule[N-1] 秒 (默认 5/10/15)
+                if attempt < retry_policy.max_retries:
+                    idx = min(attempt - 1, len(retry_policy.backoff_schedule) - 1)
+                    time.sleep(retry_policy.backoff_schedule[idx])
 
         # 全部 retry 后失败
         duration = time.monotonic() - start

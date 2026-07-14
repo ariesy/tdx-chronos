@@ -23,6 +23,35 @@ echo "============================================================" | tee -a "$L
 cd "$TDX_ROOT"
 export PYTHONPATH=src:vendor/_vendor
 
+# Sprint 13 · pre-flight: 磁盘满了再下也白下, 提前 Alertor 并退出 2
+# Sprint 14 扩展: 加 zip integrity + writability (3-pass check)
+# (事故: 2026-07-14 daily_incr ENOSPC crash → bulk_download.py:352)
+# 阈值默认 5 GB, 可用 SNAP_MIN_FREE_GB 覆盖
+.venv/bin/python << PYEOF | tee -a "$LOG_FILE"
+import logging, sys
+from pathlib import Path
+from tdx_chronos.alertor import Alertor
+from tdx_chronos.preflight import run_extended_preflight
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger("daily_incr.preflight")
+
+rc = run_extended_preflight(
+    data_dir=Path("$TDX_ROOT/data"),
+    min_free_gb=float("${SNAP_MIN_FREE_GB:-5}"),
+    snapshot_dir=Path("$SNAP_DIR"),
+    alertor=Alertor(),
+    source="daily_incr.sh",
+)
+log.info(f"preflight (disk+zip+write) exit={rc}")
+sys.exit(rc)
+PYEOF
+PREFLIGHT_RC=$?
+if [ "$PREFLIGHT_RC" -ne 0 ]; then
+    echo "preflight 失败 (exit=$PREFLIGHT_RC), 退出" | tee -a "$LOG_FILE"
+    exit $PREFLIGHT_RC
+fi
+
 # 1. 下载 5 zip (3 核心 + 2 指数)
 # 注: tdxzs_day + shzsday + szzsday 都含 5 主要指数, 只需下载 3 zip
 .venv/bin/python << PYEOF | tee -a "$LOG_FILE"
@@ -140,6 +169,17 @@ except Exception as e:
 
 elapsed = time.monotonic() - start
 log.info(f"daily_incr 完成 · elapsed={elapsed:.1f}s · success={total_success} failed={total_failed}")
+
+# Sprint 13 · snapshot retention + dedup + 删 source zips
+# 默认保留 3 天 (SNAP_KEEP_DAYS) + 删 source zips (SNAP_KEEP_ZIPS=1 禁用)
+from tdx_chronos.retention import run_all_cleanup
+keep_days = int("${SNAP_KEEP_DAYS:-3}")
+keep_zips = "${SNAP_KEEP_ZIPS:-0}" == "1"
+snap_root = Path("$TDX_ROOT/data/snapshot")
+summary = run_all_cleanup(snap_root, keep_days=keep_days, dry_run=False)
+log.info(f"retention: {summary}")
+if keep_zips:
+    log.warning(f"SNAP_KEEP_ZIPS=1 → 已保留 {summary.source_zips_pruned} 个 source zip (再跑一遍才能删)")
 
 # 输出总结 (给 cron delivery 抓)
 print()

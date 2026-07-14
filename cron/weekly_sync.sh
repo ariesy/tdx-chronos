@@ -21,6 +21,33 @@ echo "============================================================" | tee -a "$L
 cd "$TDX_ROOT"
 export PYTHONPATH=src:vendor/_vendor
 
+# Sprint 13 · pre-flight: 同 daily_incr.sh (2026-07-14 ENOSPC 教训)
+# Sprint 14 升级 → run_extended_preflight (disk + zip + writability)
+.venv/bin/python << PYEOF | tee -a "$LOG_FILE"
+import logging, sys
+from pathlib import Path
+from tdx_chronos.alertor import Alertor
+from tdx_chronos.preflight import run_extended_preflight
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger("weekly_sync.preflight")
+
+rc = run_extended_preflight(
+    data_dir=Path("$TDX_ROOT/data"),
+    min_free_gb=float("${SNAP_MIN_FREE_GB:-5}"),
+    snapshot_dir=Path("$SNAP_DIR"),
+    alertor=Alertor(),
+    source="weekly_sync.sh",
+)
+log.info(f"preflight (disk+zip+write) exit={rc}")
+sys.exit(rc)
+PYEOF
+PREFLIGHT_RC=$?
+if [ "$PREFLIGHT_RC" -ne 0 ]; then
+    echo "preflight 失败 (exit=$PREFLIGHT_RC), 退出" | tee -a "$LOG_FILE"
+    exit $PREFLIGHT_RC
+fi
+
 .venv/bin/python << PYEOF | tee -a "$LOG_FILE"
 import logging
 import sys
@@ -120,6 +147,16 @@ for dat in sorted(raw_dir.glob("gpcw*.zip")) + sorted(raw_dir.glob("gpcw*.dat"))
 
 elapsed = time.monotonic() - start
 log.info(f"weekly_sync 完成 · quarters={quarter_count} db_recorded={db_recorded} elapsed={elapsed:.1f}s")
+
+# Sprint 13 · snapshot retention + dedup + 删 source zips (同 daily_incr.sh)
+from tdx_chronos.retention import run_all_cleanup
+keep_days = int("${SNAP_KEEP_DAYS:-3}")
+keep_zips = "${SNAP_KEEP_ZIPS:-0}" == "1"
+snap_root = Path("$TDX_ROOT/data/snapshot")
+summary = run_all_cleanup(snap_root, keep_days=keep_days, dry_run=False)
+log.info(f"retention: {summary}")
+if keep_zips:
+    log.warning(f"SNAP_KEEP_ZIPS=1 → 已保留 {summary.source_zips_pruned} 个 source zip (再跑一遍才能删)")
 
 # 升级 download_log: pending → success (Step 1-3 全部成功后)
 try:

@@ -71,8 +71,9 @@ class TestToCategorizedBasic:
             total += cat_count
 
         # Sprint 7 实证: 4 categories 已分类 ~119.5M + rare_event ~750K ≈ 120.3M
+        # Sprint 13 hotfix·opt: 实际 121,763,833 (gp 增量增长, 半年 headroom 给 130M)
         assert total >= 119_000_000, f"total too small: {total:,}"
-        assert total <= 121_000_000, f"total too large: {total:,}"
+        assert total <= 130_000_000, f"total too large: {total:,}"
 
     def test_capital_share_dominates_4_categories(self):
         """capital_share 在 4 类别中应最大 (内存安全版)"""

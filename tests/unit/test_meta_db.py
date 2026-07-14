@@ -72,7 +72,7 @@ class TestRecordSymbol:
             first_listing_date=19991110,
             record_count=6338,
             source_zip="hsjday.zip",
-            parquet_path="data/parquet/sh/sh600000.parquet",
+            parquet_path="data/parquet_compact/sh/sh600000.parquet",
         )
         assert db.count_symbols() == 1
 
@@ -220,7 +220,7 @@ class TestIntegration:
                 first_listing_date=result.first_date,
                 record_count=result.record_count,
                 source_zip="hsjday.zip",
-                parquet_path=f"data/parquet/{market}/{symbol}.parquet",
+                parquet_path=f"data/parquet_compact/{market}/{symbol}.parquet",
             )
 
         # 验证: 3 行 symbol_metadata

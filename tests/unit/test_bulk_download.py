@@ -9,6 +9,8 @@ mock HTTP 服务器 (threading + http.server) 测试:
 """
 from __future__ import annotations
 
+import errno
+
 import http.server
 import json
 import socketserver
@@ -25,6 +27,7 @@ from tdx_chronos.sources.bulk_download import (
     DEFAULT_ZIPS,
     BulkDownloader,
     DownloadSummary,
+    RetryPolicy,
     ZipResult,
 )
 
@@ -296,3 +299,193 @@ class TestIndexZips:
         from tdx_chronos.sources.bulk_download import DEFAULT_INDEX_ZIPS
         for spec in DEFAULT_INDEX_ZIPS:
             assert spec["url"].startswith("https://www.tdx.com.cn/"), spec
+
+
+# ---------------------------------------------------------------------
+# TestRetryPolicy · Sprint 14 condition-based retry
+# ---------------------------------------------------------------------
+class TestRetryPolicyClassify:
+    """RetryPolicy.classify() 异常分类: terminal / transient / unknown."""
+
+    def test_enospc_is_terminal(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = OSError(errno.ENOSPC, "No space left on device")
+        assert RetryPolicy().classify(exc) == "terminal"
+
+    def test_enomem_is_terminal(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = OSError(errno.ENOMEM, "Out of memory")
+        assert RetryPolicy().classify(exc) == "terminal"
+
+    def test_erofs_is_terminal(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = OSError(errno.EROFS, "Read-only filesystem")
+        assert RetryPolicy().classify(exc) == "terminal"
+
+    def test_other_oserror_is_transient(self):
+        """EIO / EAGAIN 等其它 OSError 走 transient (硬件抖动可能自愈)."""
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = OSError(errno.EIO, "I/O error")
+        assert RetryPolicy().classify(exc) == "transient"
+
+    def test_404_is_terminal(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        import requests
+        resp = requests.Response()
+        resp.status_code = 404
+        exc = requests.exceptions.HTTPError("Not Found", response=resp)
+        assert RetryPolicy().classify(exc) == "terminal"
+
+    def test_500_is_transient(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        import requests
+        resp = requests.Response()
+        resp.status_code = 503
+        exc = requests.exceptions.HTTPError("Service Unavailable", response=resp)
+        assert RetryPolicy().classify(exc) == "transient"
+
+    def test_connection_error_is_transient(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = requests.exceptions.ConnectionError("DNS failure")
+        assert RetryPolicy().classify(exc) == "transient"
+
+    def test_timeout_is_transient(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        exc = requests.exceptions.Timeout("read timed out")
+        assert RetryPolicy().classify(exc) == "transient"
+
+    def test_keyboard_interrupt_is_terminal(self):
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        assert RetryPolicy().classify(KeyboardInterrupt()) == "terminal"
+
+    def test_value_error_is_unknown(self):
+        """未列入的异常 → unknown (legacy retry 默认行为)."""
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        assert RetryPolicy().classify(ValueError("bad")) == "unknown"
+
+    def test_http_error_without_response_is_transient(self):
+        """无 response 对象的 HTTPError 默认按 transient 算."""
+        import requests
+        from tdx_chronos.sources.bulk_download import RetryPolicy
+        import requests
+        exc = requests.exceptions.HTTPError("no response attached")
+        assert RetryPolicy().classify(exc) == "transient"
+
+
+class TestRetryPolicyInDownloadOne:
+    """RetryPolicy 影响 download_one 实际行为 (terminal 不重试)."""
+
+    def _mock_server_with_path_returns_503(self, tmp_path):
+        """Server 持续返回 503 (transient 错误)."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                self.send_response(503)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+
+            def do_GET(self):
+                self.send_response(503)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server
+
+    def test_terminal_enospc_does_not_retry(self, tmp_path, monkeypatch):
+        """OSError(ENOSPC) → 0 retry, fail-fast (< 1s) · 关键修复.
+
+        2026-07-14 incident: 5 zips × 3 retries × 5-15s sleep = 数分钟空转.
+        """
+        from tdx_chronos.sources.bulk_download import BulkDownloader, RetryPolicy
+
+        def fake_download(*args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(BulkDownloader, "_download_with_resume", fake_download)
+
+        # backoff 3 retry 跑完理论时间 > 30s · 设大保证 cover
+        policy = RetryPolicy(max_retries=5, backoff_schedule=(60.0, 60.0, 60.0, 60.0, 60.0))
+        dl = BulkDownloader(timeout=1)
+        spec = {"name": "test", "url": "http://x", "approx_size": 100, "contains": "x"}
+
+        t0 = time.monotonic()
+        result = dl.download_one(spec, tmp_path / "snap", retry_policy=policy)
+        elapsed = time.monotonic() - t0
+
+        assert result.status == "failed"
+        assert "terminal" in result.error
+        assert result.retry_count == 0  # 没重试就退出
+        assert elapsed < 2.0, f"terminal 应立即失败, 但耗时 {elapsed:.1f}s"
+
+    def test_transient_retries_with_backoff(self, tmp_path, monkeypatch):
+        """connection 类瞬时错误 → 走 retry, 重试次数 == max_retries."""
+        import requests
+
+        attempts = []
+
+        def fake_download(*args, **kwargs):
+            attempts.append(1)
+            raise requests.exceptions.ConnectionError("network glitch")
+
+        monkeypatch.setattr(BulkDownloader, "_download_with_resume", fake_download)
+
+        # 用极小 backoff 让测试快
+        policy = RetryPolicy(
+            max_retries=3,
+            backoff_schedule=(0.01, 0.01, 0.01),
+        )
+        dl = BulkDownloader(timeout=1)
+        spec = {"name": "test", "url": "http://x", "approx_size": 100, "contains": "x"}
+
+        t0 = time.monotonic()
+        result = dl.download_one(spec, tmp_path / "snap", retry_policy=policy)
+        elapsed = time.monotonic() - t0
+
+        assert result.status == "failed"
+        # retry_count semantics: attempts - 1 (excluding the initial failure)
+        # max_retries=3 + 3 failures → 2 retries → retry_count == 2
+        assert result.retry_count == 2
+        assert len(attempts) == 3
+        # backoff_schedule 内为 0.01s, 总应 < 1s
+        assert elapsed < 1.5, f"transient 应在 1s 内走完 3 retry, 但耗时 {elapsed:.1f}s"
+
+    def test_default_policy_uses_max_retries_param(self, tmp_path, monkeypatch):
+        """retry_policy=None 时使用默认 RetryPolicy(max_retries=max_retries)."""
+        import requests
+
+        def fake_download(*args, **kwargs):
+            raise requests.exceptions.ConnectionError("always")
+
+        monkeypatch.setattr(BulkDownloader, "_download_with_resume", fake_download)
+        policy = RetryPolicy(max_retries=2, backoff_schedule=(0.01, 0.01))
+        dl = BulkDownloader(timeout=1)
+        spec = {"name": "test", "url": "http://x", "approx_size": 100, "contains": "x"}
+
+        # 用 max_retries=2 但不传 retry_policy → default policy 应用 max_retries=2
+        result = dl.download_one(spec, tmp_path / "snap", max_retries=2)
+        # backoff 是 default (5.0), 测试会更慢, 这里只验证不 crash
+        assert result.status == "failed"
+        # retry_count semantics: attempts - 1
+        assert result.retry_count == 1
+
+
+# Helper for time module access in this file
+import time

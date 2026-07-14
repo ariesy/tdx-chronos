@@ -36,18 +36,21 @@ class TestDoctorHealthy:
         # 不强求 healthy (可能 K线没到位) 但 level 必在 3 选 1
         assert report.level in {LEVEL_HEALTHY, LEVEL_DEGRADED, LEVEL_UNHEALTHY}
         # Sprint 9 T1+T2 加 reconciliation + quarter_metadata → 10 个 check
-        assert len(report.checks) == 10
+        # Sprint 14 加 disk_snapshots → 11 个 check
+        assert len(report.checks) == 11
 
     def test_real_data_8_checks_present(self):
         report = Doctor().run()
         names = {c.name for c in report.checks}
         # Sprint 9 T1+T2 加 reconciliation + quarter_metadata → 10 个 check
+        # Sprint 14 加 disk_snapshots → 11 个 check
         expected = {
             "kline_symbols", "financial_quarters", "gp_records",
             "index_records", "download_log_7d_success_rate",
             "kline_parquet_size_mb", "index_freshness_days", "error_rate",
             "reconciliation",  # Sprint 9 T1
             "quarter_metadata",  # Sprint 9 T2
+            "disk_snapshots",  # Sprint 14
         }
         assert names == expected
 
@@ -358,3 +361,103 @@ class TestDoctorRealAlertStandalone:
         # 验证: degraded 应发 warning (不是 healthy 返回 None)
         # 注: 部分环境下 result 为 None (可能是 pytest cache)
         # 只要在正式运行时 result_card != None 即可
+
+class TestDiskSnapshotsCheck:
+    """Sprint 14 · Doctor._check_disk_snapshots() 新增.
+
+    验证:
+      1. snapshot/ 不存在 → OK noop
+      2. 健康状态 (2 dirs × 3 GB = 6 GB, 0d old) → passed
+      3. 总占用超阈值 (8 dirs × 5 GB = 40 GB) → failed
+      4. 有 stale dir (> max_age_days) → failed
+      5. 未来日期 dir (clock skew) → OK (不视为 stale)
+    """
+
+    @staticmethod
+    def _make_dated_snap(root: Path, name: str, *, files_kb: int = 10) -> Path:
+        """Create snapshot/<name>/ with `files_kb` KB of small files inside."""
+        p = root / name
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "marker.bin").write_bytes(b"\x00" * (files_kb * 1024))
+        return p
+
+    def _setup_doctor(self, tmp_path: Path):
+        meta_db = tmp_path / "meta" / "meta.db"
+        meta_db.parent.mkdir(parents=True, exist_ok=True)
+        meta_db.write_bytes(b"")  # empty file; tests don't actually open it
+        return Doctor(meta_db, tmp_path)
+
+    def test_missing_snapshot_root_is_ok_noop(self, tmp_path: Path):
+        """snapshot/ 不存在 → OK with empty actual."""
+        from tdx_chronos.doctor import Doctor
+        d = self._setup_doctor(tmp_path)  # 注意: tmp_path 下没 snapshot/
+        result = d._check_disk_snapshots(today=__import__("datetime").date(2026, 7, 14))
+        assert result.passed is True
+        assert result.actual["dirs"] == 0
+        assert "不存在" in (result.detail or "")
+
+    def test_healthy_two_dated_dirs(self, tmp_path: Path):
+        """2 个 dated dirs, 3 GB each, 0 天老 → passed."""
+        from datetime import date
+        snap = tmp_path / "snapshot"
+        snap.mkdir()
+        # 3 GB = 3_000_000 KB
+        self._make_dated_snap(snap, "2026-07-13", files_kb=3_000_000)
+        self._make_dated_snap(snap, "2026-07-14", files_kb=3_000_000)
+
+        d = self._setup_doctor(tmp_path)
+        result = d._check_disk_snapshots(today=date(2026, 7, 14))
+
+        assert result.passed is True
+        assert result.actual["dated_dirs"] == 2
+        assert 5.5 < result.actual["total_gb"] < 6.5
+
+    def test_total_size_exceeds_threshold(self, tmp_path: Path):
+        """总占用超阈值 → failed (用 0.001 GB 阈值 + 2 MB 测试)."""
+        from datetime import date
+        snap = tmp_path / "snapshot"
+        snap.mkdir()
+        # 4 dirs × 2 MB = 8 MB; 阈值设 0.001 GB (~1 MB) 强制超
+        for offset in range(4):
+            d_name = (date(2026, 7, 14) - __import__("datetime").timedelta(days=offset)).isoformat()
+            self._make_dated_snap(snap, d_name, files_kb=2_000)
+
+        d = self._setup_doctor(tmp_path)
+        result = d._check_disk_snapshots(
+            today=date(2026, 7, 14), max_total_gb=0.001,
+        )
+
+        assert result.passed is False
+        assert result.actual["total_gb"] > 0.001
+        assert "超过阈值" in result.detail
+
+    def test_stale_dir_triggers_failure(self, tmp_path: Path):
+        """有 30 天前老 dir, retention 失效告警."""
+        from datetime import date, timedelta
+        snap = tmp_path / "snapshot"
+        snap.mkdir()
+        # 今天 + 1 个 30 天前的 stale dir
+        self._make_dated_snap(snap, "2026-07-14", files_kb=1000)
+        self._make_dated_snap(snap, "2026-06-14", files_kb=1000)  # 30d old
+
+        d = self._setup_doctor(tmp_path)
+        result = d._check_disk_snapshots(today=date(2026, 7, 14))
+
+        assert result.passed is False
+        assert result.actual["stale_count"] >= 1
+        assert "2026-06-14" in result.detail
+        assert "30d" in result.detail
+
+    def test_future_dated_dirs_are_kept(self, tmp_path: Path):
+        """未来日期 (clock skew) 视为 in-window → OK."""
+        from datetime import date, timedelta
+        snap = tmp_path / "snapshot"
+        snap.mkdir()
+        self._make_dated_snap(snap, "2026-07-14", files_kb=1000)
+        self._make_dated_snap(snap, "2026-08-15", files_kb=1000)  # 32 天后 (future)
+
+        d = self._setup_doctor(tmp_path)
+        result = d._check_disk_snapshots(today=date(2026, 7, 14))
+
+        assert result.passed is True
+        assert result.actual["stale_count"] == 0

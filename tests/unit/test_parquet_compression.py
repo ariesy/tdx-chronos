@@ -44,7 +44,7 @@ def tiny_parquet_dir(tmp_path):
 @pytest.fixture
 def real_parquet_dir():
     """真实 12,256 Parquet (Sprint 2 末产物)"""
-    return Path("/app/tdx-chronos/data/parquet")
+    return Path("/app/tdx-chronos/data/parquet_compact")
 
 
 # ---------------------------------------------------------------------

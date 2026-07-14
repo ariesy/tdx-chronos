@@ -101,5 +101,66 @@ class TestWeeklySyncContent:
 
     def test_weekly_sync_parses_quarters(self):
         content = WEEKLY_SYNC.read_text()
+        assert "tdxfin" in content
         assert "gpcw" in content
         assert "TdxFinReader" in content
+
+
+class TestSprint13Hardening:
+    """Sprint 13 · 2026-07-14 daily_incr ENOSPC 教训加固."""
+
+    def test_daily_incr_runs_preflight(self):
+        """preflight 模块必须在 daily_incr.sh 顶部被调用 (Sprint 14: extended 3-pass)."""
+        content = DAILY_INCR.read_text()
+        assert "from tdx_chronos.preflight import run_extended_preflight" in content
+        assert "PREFLIGHT_RC" in content
+        assert "exit $PREFLIGHT_RC" in content
+
+    def test_weekly_sync_runs_preflight(self):
+        content = WEEKLY_SYNC.read_text()
+        assert "from tdx_chronos.preflight import run_extended_preflight" in content
+        assert "PREFLIGHT_RC" in content
+        assert "exit $PREFLIGHT_RC" in content
+
+    def test_daily_incr_prunes_snapshots(self):
+        """retention 模块在 cron 末尾被调用, 保留 3 天 (Sprint 13 hotfix)."""
+        content = DAILY_INCR.read_text()
+        assert "run_all_cleanup" in content
+        assert "SNAP_KEEP_DAYS" in content
+        assert ":-3" in content  # 默认值 (down from 7 since 2026-07-14 audit)
+
+    def test_weekly_sync_prunes_snapshots(self):
+        content = WEEKLY_SYNC.read_text()
+        assert "run_all_cleanup" in content
+        assert "SNAP_KEEP_DAYS" in content
+        assert ":-3" in content
+
+    def test_preflight_threshold_configurable(self):
+        """min_free_gb 应通过 SNAP_MIN_FREE_GB 覆盖, 默认 5 GB."""
+        content = DAILY_INCR.read_text()
+        assert "SNAP_MIN_FREE_GB" in content
+        assert ":-5" in content
+
+    def test_daily_incr_dedups_finance_zips(self):
+        """Sprint 13 hotfix·opt: dedup_all_snapshots 在 run_all_cleanup 内被调."""
+        content = DAILY_INCR.read_text()
+        assert "from tdx_chronos.retention import" in content
+        assert "run_all_cleanup" in content
+
+    def test_weekly_sync_dedups_finance_zips(self):
+        content = WEEKLY_SYNC.read_text()
+        assert "from tdx_chronos.retention import" in content
+        assert "run_all_cleanup" in content
+
+    def test_daily_incr_prunes_source_zips(self):
+        """Sprint 13 hotfix·opt: prune_source_zips 在 cron 末尾被调, 默认删源 zip."""
+        content = DAILY_INCR.read_text()
+        assert "SNAP_KEEP_ZIPS" in content  # env var to disable
+        assert ":-0" in content  # default = delete zips
+        assert "summary" in content  # CleanupSummary logged
+
+    def test_weekly_sync_prunes_source_zips(self):
+        content = WEEKLY_SYNC.read_text()
+        assert "SNAP_KEEP_ZIPS" in content
+        assert ":-0" in content
+        assert "summary" in content

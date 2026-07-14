@@ -150,8 +150,8 @@ class ParquetOptimizer:
         """执行优化 · 返回 summary
 
         Args:
-            input_dir:  原 Parquet 目录 (data/parquet/sh,sz,bj/*.parquet)
-            output_dir: 优化输出目录 (data/parquet_compact)
+            input_dir:  原 Parquet 目录 (data/parquet_compact/sh,sz,bj/*.parquet)
+            output_dir: 优化输出目录 (data/parquet_compact_merged)
             db_path:    Optional meta.db · 写 symbol_metadata.parquet_path
 
         Returns:

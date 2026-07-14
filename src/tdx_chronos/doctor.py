@@ -22,9 +22,10 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -40,6 +41,11 @@ LEVEL_UNHEALTHY = "unhealthy"
 # K线预期 (Sprint 2 M1 验证 · 12,256 真 .day)
 EXPECTED_KLINE_SYMBOLS = 12_256
 EXPECTED_INDEX_RECORDS = 28_004
+
+# Sprint 14 · snapshot 检查阈值 (与 retention 默认 3d 配合)
+SNAPSHOT_MAX_TOTAL_GB = 30.0     # 上限: 30 GB (375 dirs 用满 /app 30%)
+SNAPSHOT_MAX_AGE_DAYS = 10        # 警告: 超过 retention+7 天 (避免 retention 失效)
+SNAPSHOT_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass
@@ -214,7 +220,7 @@ class Doctor:
         kline_dir = self.parquet_root / "parquet_compact"
         if not kline_dir.exists():
             # fallback: parquet/
-            kline_dir = self.parquet_root / "parquet"
+            kline_dir = self.parquet_root / "parquet"  # legacy (Sprint 14 removed canonical; kept as defensive fallback)
         if not kline_dir.exists():
             return CheckResult(
                 name="kline_parquet_size_mb",
@@ -231,6 +237,120 @@ class Doctor:
             passed=passed,
             actual=f"{actual_mb:.1f} MB",
             threshold=">= 600 MB",
+        )
+
+    def _check_disk_snapshots(
+        self,
+        today: Optional[date] = None,
+        max_total_gb: float = SNAPSHOT_MAX_TOTAL_GB,
+        max_age_days: int = SNAPSHOT_MAX_AGE_DAYS,
+    ) -> CheckResult:
+        """Sprint 14 · 检查 snapshot/ 占盘大小 + 最老 dated dir age.
+
+        Walk ``data/snapshot/<YYYY-MM-DD>/``:
+          * Total bytes > ``max_total_gb`` → fail
+          * Any dated dir > ``max_age_days`` 旧 → fail (retention 失效)
+
+        Args:
+            today:        override for deterministic tests; default local date.
+            max_total_gb: threshold in GB.
+            max_age_days: max retained age (default 10, includes 7-day buffer).
+        """
+        snap_root = self.parquet_root / "snapshot"
+        if today is None:
+            today = datetime.now().date()
+
+        if not snap_root.exists():
+            return CheckResult(
+                name="disk_snapshots",
+                passed=True,
+                actual={"dirs": 0, "total_gb": 0.0},
+                threshold=f"<= {max_total_gb:.1f} GB, no dir > {max_age_days} days old",
+                detail="snapshot/ 不存在 (首次跑或已清空)",
+            )
+
+        # Walk
+        total_bytes = 0
+        dated_dirs: List = []  # (date, size_bytes, name)
+        other_dirs: List[str] = []
+        for child in sorted(snap_root.iterdir()):
+            if not child.is_dir():
+                continue
+            sz = sum(p.stat().st_size for p in child.rglob("*") if p.is_file())
+            total_bytes += sz
+            m = SNAPSHOT_DATE_DIR_RE.match(child.name)
+            if m:
+                try:
+                    d = datetime.strptime(child.name, "%Y-%m-%d").date()
+                    dated_dirs.append((d, sz, child.name))
+                except ValueError:
+                    other_dirs.append(child.name)
+            else:
+                other_dirs.append(child.name)
+
+        total_gb = round(total_bytes / 1024 / 1024 / 1024, 2)
+        size_ok = total_gb <= max_total_gb
+
+        # Age check (only dated dirs) · oldest = min(dates)
+        oldest_date = min((d for d, _, _ in dated_dirs), default=None)
+        age_ok = True
+        oldest_age_days = None
+        if oldest_date is not None:
+            oldest_age_days = (today - oldest_date).days
+            if oldest_age_days > max_age_days:
+                age_ok = False
+
+        # Identify stale dirs (for actionable detail)
+        stale = [
+            (name, (today - d).days)
+            for d, _, name in dated_dirs
+            if (today - d).days > max_age_days
+        ]
+
+        passed = size_ok and age_ok
+        actual = {
+            "dirs": len(dated_dirs) + len(other_dirs),
+            "dated_dirs": len(dated_dirs),
+            "other_dirs": len(other_dirs),
+            "total_gb": total_gb,
+            "oldest_age_days": oldest_age_days,
+            "stale_count": len(stale),
+        }
+
+        detail_parts = []
+        if not size_ok:
+            detail_parts.append(
+                f"snapshot/ 占盘 {total_gb:.2f} GB 超过阈值 {max_total_gb:.1f} GB"
+            )
+        if not age_ok:
+            stale_str = ", ".join(f"{n} ({age}d)" for n, age in stale[:5])
+            detail_parts.append(
+                f"{len(stale)} 个 dated dir 超过 {max_age_days} 天: {stale_str}"
+            )
+        if not detail_parts:
+            detail_parts.append(
+                f"OK: {len(dated_dirs)} dated + {len(other_dirs)} other, "
+                f"oldest={oldest_date.isoformat() if oldest_date else 'none'} "
+                f"({oldest_age_days if oldest_age_days is not None else 0}d old)"
+            )
+        if not age_ok:
+            stale_str = ", ".join(f"{n} ({age}d)" for n, age in stale[:5])
+            detail_parts.append(
+                f"{len(stale)} 个 dated dir 超过 {max_age_days} 天: {stale_str}"
+            )
+        if not detail_parts:
+            detail_parts.append(
+                f"OK: {len(dated_dirs)} dated + {len(other_dirs)} other, "
+                f"oldest={oldest_date.isoformat() if oldest_date else 'none'} "
+                f"({oldest_age_days if oldest_age_days is not None else 0}d old)"
+            )
+
+        return CheckResult(
+            name="disk_snapshots",
+            passed=passed,
+            actual=actual,
+            threshold=f"<= {max_total_gb:.1f} GB, age <= {max_age_days} days",
+            detail=" · ".join(detail_parts),
         )
 
     def _check_index_freshness(self) -> CheckResult:
@@ -403,7 +523,7 @@ class Doctor:
         )
 
     def run(self) -> DoctorReport:
-        """跑全部 10 检查 → DoctorReport (Sprint 9 T1+T2)"""
+        """跑全部 11 检查 → DoctorReport (Sprint 14 加 disk_snapshots)"""
         report = DoctorReport()
         db = MetaDB(self.meta_db_path)
         try:
@@ -414,6 +534,7 @@ class Doctor:
                 self._check_index_records(),
                 self._check_download_log_7d(db),
                 self._check_kline_parquet_size(),
+                self._check_disk_snapshots(),
                 self._check_index_freshness(),
                 self._check_error_rate(db),
                 self._check_reconciliation(),

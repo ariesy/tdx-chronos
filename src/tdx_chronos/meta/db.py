@@ -15,7 +15,7 @@
   >>> db = MetaDB('/tmp/test_meta.db')   # 真实路径
   >>> db.init_schema()
   >>> db.record_symbol('sh600000', 'sh', 19991110, 6338, 'hsjday.zip',
-  ...                  'data/parquet/sh/sh600000.parquet')
+  ...                  'data/parquet_compact/sh/sh600000.parquet')
   >>> db.record_download('hsjday.zip', 'data.tdx.com.cn', 540_000_000, 'abc...')
   >>> len(db.get_symbols_by_market('sh'))
   1
@@ -214,7 +214,7 @@ class MetaDB:
             first_listing_date:  YYYYMMDD
             record_count:        解析后记录数
             source_zip:          'hsjday.zip' 等
-            parquet_path:        e.g. 'data/parquet/sh/sh600000.parquet'
+            parquet_path:        e.g. 'data/parquet_compact/sh/sh600000.parquet'
         """
         conn = self._connect()
         now = datetime.now(timezone.utc).isoformat()
